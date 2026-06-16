@@ -1,0 +1,28 @@
+# 二进制产物
+aimanager
+airesourcemanager
+
+# Go
+*.exe
+*.dll
+*.so
+*.dylib
+
+# 依赖
+web/node_modules/
+
+# 构建产物
+web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 运行时数据
+*.db
+*.log

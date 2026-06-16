@@ -1,0 +1,38 @@
+/** Element Plus 暗色模式覆盖样式 */
+
+/* 下拉菜单 */
+.dark .el-dropdown-menu {
+  background-color: #1f2937;
+  border-color: #374151;
+}
+
+.dark .el-dropdown-menu__item {
+  color: #e5e7eb;
+}
+
+.dark .el-dropdown-menu__item:hover {
+  background-color: #374151;
+  color: #fff;
+}
+
+/* 按钮 */
+.dark .el-button {
+  --el-button-bg-color: #374151;
+  --el-button-border-color: #4b5563;
+  --el-button-text-color: #e5e7eb;
+  --el-button-hover-bg-color: #4b5563;
+  --el-button-hover-border-color: #6b7280;
+  --el-button-hover-text-color: #fff;
+}
+
+/* popper / tooltip */
+.dark .el-popper.is-light {
+  background-color: #1f2937;
+  border-color: #374151;
+  color: #e5e7eb;
+}
+
+.dark .el-popper.is-light .el-popper__arrow::before {
+  background-color: #1f2937;
+  border-color: #374151;
+}

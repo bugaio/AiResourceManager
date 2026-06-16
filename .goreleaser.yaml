@@ -1,0 +1,115 @@
+version: 2
+
+project_name: aimanager
+
+before:
+  hooks:
+    # 构建前端静态资源
+    - bash scripts/build-frontend.sh
+
+builds:
+  # macOS ARM64 (Apple Silicon)
+  - id: darwin-arm64
+    main: .
+    binary: aimanager
+    env:
+      - CGO_ENABLED=1
+      - CC={{ .Env.PWD }}/scripts/zigcc-darwin-arm64.sh
+    goos:
+      - darwin
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/anthropic/airesourcemanager/cmd.Version={{.Version}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Commit={{.ShortCommit}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Date={{.Date}}
+    tags:
+      - sqlite_json
+
+  # macOS AMD64 (Intel)
+  - id: darwin-amd64
+    main: .
+    binary: aimanager
+    env:
+      - CGO_ENABLED=1
+      - CC={{ .Env.PWD }}/scripts/zigcc-darwin-amd64.sh
+    goos:
+      - darwin
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -X github.com/anthropic/airesourcemanager/cmd.Version={{.Version}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Commit={{.ShortCommit}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Date={{.Date}}
+    tags:
+      - sqlite_json
+
+  # Windows AMD64
+  - id: windows-amd64
+    main: .
+    binary: aimanager
+    env:
+      - CGO_ENABLED=1
+      - CC={{ .Env.PWD }}/scripts/zigcc-windows-amd64.sh
+    goos:
+      - windows
+    goarch:
+      - amd64
+    ldflags:
+      - -s -w
+      - -X github.com/anthropic/airesourcemanager/cmd.Version={{.Version}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Commit={{.ShortCommit}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Date={{.Date}}
+    tags:
+      - sqlite_json
+
+  # Windows ARM64
+  - id: windows-arm64
+    main: .
+    binary: aimanager
+    env:
+      - CGO_ENABLED=1
+      - CC={{ .Env.PWD }}/scripts/zigcc-windows-arm64.sh
+    goos:
+      - windows
+    goarch:
+      - arm64
+    ldflags:
+      - -s -w
+      - -X github.com/anthropic/airesourcemanager/cmd.Version={{.Version}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Commit={{.ShortCommit}}
+      - -X github.com/anthropic/airesourcemanager/cmd.Date={{.Date}}
+    tags:
+      - sqlite_json
+
+archives:
+  - id: default
+    formats: ["tar.gz"]
+    format_overrides:
+      - goos: windows
+        formats: ["zip"]
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
+    files:
+      - README.md
+      - LICENSE*
+      - configs/*
+
+checksum:
+  name_template: "checksums.txt"
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+
+release:
+  github:
+    owner: bugaio
+    name: AiResourceManager
+  draft: true
+  prerelease: auto

@@ -1,0 +1,9 @@
+# AiResourceManager 配置文件
+# 首次启动时自动生成，可根据需要修改
+
+# 服务监听端口（默认 3678）
+port: 3678
+
+# 数据库文件路径（默认在 ~/.aiManager/data.db）
+# 支持相对路径（相对于 ~/.aiManager/）和绝对路径
+db_path: "~/.aiManager/data.db"

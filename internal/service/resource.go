@@ -1,0 +1,441 @@
+// Package service resource.go 实现资源的业务逻辑
+// 包括创建/删除时的文件系统操作、校验、级联删除等
+package service
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/anthropic/airesourcemanager/internal/model"
+	"github.com/anthropic/airesourcemanager/internal/repo"
+	"github.com/anthropic/airesourcemanager/internal/util"
+)
+
+// ResourceService 资源业务服务
+type ResourceService struct {
+	repo      *repo.ResourceRepo
+	baseDir   string // ~/.aiManager 根目录
+	deploySvc *DeployService
+}
+
+// NewResourceService 创建资源服务实例
+// 参数 repo: 资源数据仓库
+// 参数 baseDir: 资源文件存储根目录（~/.aiManager）
+// 返回: ResourceService 指针
+func NewResourceService(repo *repo.ResourceRepo, baseDir string) *ResourceService {
+	return &ResourceService{repo: repo, baseDir: baseDir}
+}
+
+// SetDeployService 注入部署服务（用于删除资源时级联撤销部署）
+func (s *ResourceService) SetDeployService(deploySvc *DeployService) {
+	s.deploySvc = deploySvc
+}
+
+// CreateResource 创建资源
+// 参数 req: 创建请求
+// 返回: 创建的资源实体、错误信息
+// 逻辑: 校验类型和名称 → 生成UUID → 创建文件 → 写入数据库 → 关联分组
+func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.Resource, error) {
+	// 校验类型
+	if !isValidType(req.Type) {
+		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/mcp")
+	}
+	// 校验名称
+	if strings.TrimSpace(req.Name) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
+	}
+
+	// 检查名称重复
+	exists, err := s.repo.CheckNameExists(req.Type, req.Name, "")
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if exists {
+		return nil, model.NewBizError(model.ErrResourceExists, "同类型下资源名称已存在")
+	}
+
+	// 生成 UUID 和文件路径
+	uuid := util.NewUUID()
+	filePath, err := s.createFiles(req.Type, req.Name, uuid, req.Description)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	// 构造资源实体
+	now := timeNow()
+	resource := &model.Resource{
+		ID:          uuid,
+		Name:        req.Name,
+		Type:        req.Type,
+		Path:        filePath,
+		Description: req.Description,
+		Metadata:    "{}",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+
+	// 写入数据库
+	if err := s.repo.InsertResource(resource); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	// 关联分组
+	if req.GroupID != "" && req.GroupID != "0" {
+		if err := s.repo.InsertGroupResource(req.GroupID, resource.ID); err != nil {
+			// 分组关联失败不影响创建结果，只记录
+			_ = err
+		}
+	}
+
+	return resource, nil
+}
+
+// GetResource 获取单个资源详情
+// 参数 id: 资源 ID
+// 返回: 资源实体、错误信息
+func (s *ResourceService) GetResource(id string) (*model.Resource, error) {
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return nil, model.NewBizError(model.ErrResourceNotFound, "资源不存在")
+	}
+	return r, nil
+}
+
+// ListResources 分页查询资源列表
+// 参数 resourceType: 类型筛选
+// 参数 search: 名称搜索
+// 参数 groupID: 分组 ID
+// 参数 page: 页码
+// 参数 pageSize: 每页数量
+// 返回: 分页响应、错误信息
+func (s *ResourceService) ListResources(resourceType, search, groupID string, page, pageSize int) (*model.ResourceListResp, error) {
+	if page < 1 {
+		page = 1
+	}
+	if pageSize < 1 || pageSize > 100 {
+		pageSize = 20
+	}
+
+	list, total, err := s.repo.ListResources(resourceType, search, groupID, page, pageSize)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	return &model.ResourceListResp{
+		List:     list,
+		Total:    total,
+		Page:     page,
+		PageSize: pageSize,
+	}, nil
+}
+
+// UpdateResource 更新资源元数据（名称、描述）
+// 参数 id: 资源 ID
+// 参数 req: 更新请求
+// 返回: 更新后的资源实体、错误信息
+func (s *ResourceService) UpdateResource(id string, req *model.UpdateResourceReq) (*model.Resource, error) {
+	// 先查询资源是否存在
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return nil, model.NewBizError(model.ErrResourceNotFound, "资源不存在")
+	}
+
+	// 名称重复检查
+	if req.Name != nil && *req.Name != r.Name {
+		exists, err := s.repo.CheckNameExists(r.Type, *req.Name, id)
+		if err != nil {
+			return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+		}
+		if exists {
+			return nil, model.NewBizError(model.ErrResourceExists, "同类型下资源名称已存在")
+		}
+	}
+
+	if err := s.repo.UpdateResource(id, req.Name, req.Description); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	// 返回最新数据
+	return s.repo.GetResourceByID(id)
+}
+
+// DeleteResource 删除资源
+// 参数 id: 资源 ID
+// 参数 confirm: 是否确认级联删除
+// 返回: 关联部署信息（有关联且未确认时）、错误信息
+func (s *ResourceService) DeleteResource(id string, confirm bool) (interface{}, error) {
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return nil, model.NewBizError(model.ErrResourceNotFound, "资源不存在")
+	}
+
+	// 检查部署关联
+	deployments, err := s.repo.GetResourceDeployments(id)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	if len(deployments) > 0 && !confirm {
+		return map[string]interface{}{
+			"deployments": deployments,
+		}, model.NewBizError(model.ErrResourceHasDeploy, "资源存在关联部署，需确认删除")
+	}
+
+	// 级联撤销该资源在所有部署中的链接
+	if s.deploySvc != nil && len(deployments) > 0 {
+		for _, dep := range deployments {
+			// 从该 deployment 中撤销此资源的部署项
+			s.deploySvc.UndeployResourceFromTarget(id, dep.ID, dep.TargetPath, "")
+		}
+	}
+
+	// 删除文件系统
+	s.deleteFiles(r.Type, r.Path)
+
+	// 删除数据库记录
+	if err := s.repo.DeleteResource(id); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	return nil, nil
+}
+
+// BatchDelete 批量删除资源
+// 参数 req: 批量删除请求
+// 返回: 各项删除结果列表、错误信息
+func (s *ResourceService) BatchDelete(req *model.BatchDeleteReq) ([]model.BatchDeleteResult, error) {
+	results := make([]model.BatchDeleteResult, 0, len(req.IDs))
+
+	for _, id := range req.IDs {
+		result := model.BatchDeleteResult{ID: id}
+
+		data, err := s.DeleteResource(id, req.Confirm)
+		if err != nil {
+			if bizErr, ok := err.(*model.BizError); ok {
+				result.Success = false
+				result.Code = bizErr.Code
+				result.Msg = bizErr.Msg
+				if bizErr.Code == model.ErrResourceHasDeploy {
+					if m, ok := data.(map[string]interface{}); ok {
+						if deps, ok := m["deployments"].([]model.DeploymentInfo); ok {
+							result.Deployments = deps
+						}
+					}
+				}
+			} else {
+				result.Success = false
+				result.Code = model.ErrResourceFileIO
+				result.Msg = err.Error()
+			}
+		} else {
+			result.Success = true
+		}
+
+		results = append(results, result)
+	}
+
+	return results, nil
+}
+
+// GetContent 读取资源文件内容
+// 参数 id: 资源 ID
+// 返回: 文件内容字符串、错误信息
+func (s *ResourceService) GetContent(id string) (string, error) {
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return "", model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return "", model.NewBizError(model.ErrResourceNotFound, "资源不存在")
+	}
+
+	contentPath := s.getContentPath(r.Type, r.Path)
+	data, err := os.ReadFile(contentPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", model.NewBizError(model.ErrResourceNotFound, "资源文件不存在")
+		}
+		return "", model.NewBizError(model.ErrResourceFileIO, fmt.Sprintf("读取文件失败: %v", err))
+	}
+
+	return string(data), nil
+}
+
+// UpdateContent 更新资源文件内容
+// 参数 id: 资源 ID
+// 参数 content: 新文件内容
+// 返回: 错误信息
+func (s *ResourceService) UpdateContent(id string, content string) error {
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return model.NewBizError(model.ErrResourceNotFound, "资源不存在")
+	}
+
+	contentPath := s.getContentPath(r.Type, r.Path)
+	if err := os.WriteFile(contentPath, []byte(content), 0644); err != nil {
+		return model.NewBizError(model.ErrResourceFileIO, fmt.Sprintf("写入文件失败: %v", err))
+	}
+
+	return nil
+}
+
+// getContentPath 根据资源类型获取内容文件路径
+// 参数 resourceType: 资源类型
+// 参数 basePath: 资源基础路径
+// 返回: 内容文件的绝对路径
+func (s *ResourceService) getContentPath(resourceType, basePath string) string {
+	switch resourceType {
+	case "skill":
+		// skill 的 path 是目录，内容文件为 SKILL.md
+		return filepath.Join(basePath, "SKILL.md")
+	default:
+		// agent 和 mcp 的 path 就是文件本身
+		return basePath
+	}
+}
+
+// createFiles 根据类型创建资源文件
+// 参数 resourceType: 资源类型
+// 参数 name: 资源名称
+// 参数 uuid: 生成的 UUID
+// 参数 description: 资源描述
+// 返回: 文件路径、错误信息
+func (s *ResourceService) createFiles(resourceType, name, uuid, description string) (string, error) {
+	switch resourceType {
+	case "skill":
+		return s.createSkillFiles(name, uuid, description)
+	case "agent":
+		return s.createAgentFile(name, uuid)
+	case "mcp":
+		return s.createMCPFile(name, uuid)
+	default:
+		return "", fmt.Errorf("不支持的资源类型: %s", resourceType)
+	}
+}
+
+// createSkillFiles 创建 skill 类型的文件: {baseDir}/skills/{uuid}/SKILL.md + meta.json
+// 参数 name: skill 名称
+// 参数 uuid: UUID
+// 参数 description: skill 描述
+// 返回: skill 目录路径、错误信息
+func (s *ResourceService) createSkillFiles(name, uuid, description string) (string, error) {
+	dir := filepath.Join(s.baseDir, "skills", uuid)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建 skill 目录失败: %w", err)
+	}
+
+	// 写入 SKILL.md
+	skillContent := fmt.Sprintf("# %s\n\n", name)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
+		return "", fmt.Errorf("写入 SKILL.md 失败: %w", err)
+	}
+
+	// 写入 meta.json
+	meta := map[string]interface{}{
+		"name":        name,
+		"description": description,
+		"version":     "1.0.0",
+	}
+	metaBytes, _ := json.MarshalIndent(meta, "", "  ")
+	if err := os.WriteFile(filepath.Join(dir, "meta.json"), metaBytes, 0644); err != nil {
+		return "", fmt.Errorf("写入 meta.json 失败: %w", err)
+	}
+
+	return dir, nil
+}
+
+// createAgentFile 创建 agent 类型的文件: {baseDir}/agents/{uuid}.md
+// 参数 name: agent 名称
+// 参数 uuid: UUID
+// 返回: 文件路径、错误信息
+func (s *ResourceService) createAgentFile(name, uuid string) (string, error) {
+	dir := filepath.Join(s.baseDir, "agents")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建 agents 目录失败: %w", err)
+	}
+
+	filePath := filepath.Join(dir, uuid+".md")
+	content := fmt.Sprintf("# %s\n\n", name)
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("写入 agent 文件失败: %w", err)
+	}
+
+	return filePath, nil
+}
+
+// createMCPFile 创建 mcp 类型的文件: {baseDir}/mcps/{uuid}.jsonc
+// 参数 name: MCP Server 名称
+// 参数 uuid: UUID
+// 返回: 文件路径、错误信息
+func (s *ResourceService) createMCPFile(name, uuid string) (string, error) {
+	dir := filepath.Join(s.baseDir, "mcps")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建 mcps 目录失败: %w", err)
+	}
+
+	filePath := filepath.Join(dir, uuid+".jsonc")
+	content := `{
+  // mcp 配置
+  // 示例
+  /*
+  "chrome-devtools": {
+    "command": "npx",
+    "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
+  }
+  */
+  "mcpServers": {}
+}
+`
+
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("写入 mcp 文件失败: %w", err)
+	}
+
+	return filePath, nil
+}
+
+// deleteFiles 删除资源对应的文件系统文件
+// 参数 resourceType: 资源类型
+// 参数 path: 文件/目录路径
+// 说明: 目标不存在时静默跳过
+func (s *ResourceService) deleteFiles(resourceType, path string) {
+	if path == "" {
+		return
+	}
+	switch resourceType {
+	case "skill":
+		// skill path 是目录，整个删除
+		os.RemoveAll(path)
+	default:
+		// agent/mcp 是单文件
+		os.Remove(path)
+	}
+}
+
+// isValidType 检查资源类型是否合法
+// 参数 t: 类型字符串
+// 返回: 是否合法
+func isValidType(t string) bool {
+	return t == "skill" || t == "agent" || t == "mcp"
+}
+
+// timeNow 获取当前时间的辅助函数（方便测试 mock）
+var timeNow = func() time.Time {
+	return time.Now()
+}
