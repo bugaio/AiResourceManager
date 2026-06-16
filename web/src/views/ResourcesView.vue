@@ -174,6 +174,7 @@ async function handleDelete(resource: Resource) {
     ElMessage.success('删除成功')
     resourceStore.fetchResources()
     deployStore.fetchTargets()
+    groupStore.fetchGroups()
   } catch (e: any) {
     // 如果后端返回code 1004（有部署信息），二次确认
     if (e?.message?.includes('部署') || e?.code === 1004) {
@@ -187,6 +188,7 @@ async function handleDelete(resource: Resource) {
         ElMessage.success('删除成功')
         resourceStore.fetchResources()
         deployStore.fetchTargets()
+        groupStore.fetchGroups()
       } catch {
         // 用户取消
       }

@@ -47,11 +47,6 @@ const formattedTime = computed(() => {
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 })
 
-/** 双击打开编辑内容 */
-function handleDblClick() {
-  emit('editContent', props.resource)
-}
-
 /** 下拉菜单指令处理 */
 function handleCommand(cmd: string) {
   if (cmd === 'edit') emit('edit', props.resource)
@@ -82,15 +77,17 @@ async function handleReveal() {
     class="rounded-xl border border-gray-200 bg-white shadow-sm p-4 flex flex-col gap-3
            hover:shadow-md hover:-translate-y-[1px] transition-all
            dark:bg-gray-800 dark:border-gray-700 cursor-pointer"
-    @dblclick="handleDblClick"
+    :class="{ 'ring-2 ring-blue-400 border-blue-400': checked }"
+    @click="handleCheck"
   >
     <!-- 顶部：复选框 + 操作菜单 -->
     <div class="flex items-center justify-between">
-      <el-checkbox :model-value="checked" @change="handleCheck" aria-label="选择此资源" />
+      <el-checkbox :model-value="checked" @change="handleCheck" @click.stop aria-label="选择此资源" />
       <el-dropdown trigger="click" @command="handleCommand">
         <button
           class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400"
           aria-label="更多操作"
+          @click.stop
         >
           <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
             <circle cx="4" cy="10" r="1.5" />

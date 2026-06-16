@@ -58,6 +58,7 @@ async function handleBatchDelete() {
       selectionStore.clearAll()
       resourceStore.fetchResources()
       deployStore.fetchTargets()
+      groupStore.fetchGroups()
     } catch (_e) {}
   } else {
     // 在具体分组：仅从该分组移除
