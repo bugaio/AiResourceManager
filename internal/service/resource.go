@@ -94,7 +94,105 @@ func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.R
 	return resource, nil
 }
 
-// GetResource 获取单个资源详情
+// ImportedSkillFile 导入 skill 时的单个文件条目
+// RelPath 是相对于 skill 子目录的路径(如 "SKILL.md"、"assets/x.png")
+// Data 是文件原始字节
+type ImportedSkillFile struct {
+	RelPath string
+	Data    []byte
+}
+
+// ImportSkill 导入一个 skill: 不走模板创建,而是把外部目录的全部文件原样写入 {baseDir}/skills/{uuid}/
+// 参数 name: 从 SKILL.md frontmatter 解析得到的名称
+// 参数 description: 从 SKILL.md frontmatter 解析得到的描述
+// 参数 groupID: 可选关联分组
+// 参数 files: 该 skill 子目录下的所有文件(含相对路径)
+// 返回: 创建的资源、错误
+func (s *ResourceService) ImportSkill(name, description, groupID string, files []ImportedSkillFile) (*model.Resource, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
+	}
+	if len(files) == 0 {
+		return nil, model.NewBizError(model.ErrParamValidation, "files 不能为空")
+	}
+
+	// 同类型重名校验(与 CreateResource 一致)
+	exists, err := s.repo.CheckNameExists("skill", name, "")
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if exists {
+		return nil, model.NewBizError(model.ErrResourceExists, "同类型下资源名称已存在")
+	}
+
+	uuid := util.NewUUID()
+	dir := filepath.Join(s.baseDir, "skills", uuid)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 skill 目录失败: "+err.Error())
+	}
+
+	// 原样写入所有文件,任一失败则清理并报错
+	for _, f := range files {
+		clean, errSan := sanitizeRelPath(f.RelPath)
+		if errSan != nil {
+			_ = os.RemoveAll(dir)
+			return nil, model.NewBizError(model.ErrParamValidation, errSan.Error())
+		}
+		dst := filepath.Join(dir, clean)
+		if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, model.NewBizError(model.ErrResourceFileIO, "创建子目录失败: "+err.Error())
+		}
+		if err := os.WriteFile(dst, f.Data, 0644); err != nil {
+			_ = os.RemoveAll(dir)
+			return nil, model.NewBizError(model.ErrResourceFileIO, "写入文件失败: "+err.Error())
+		}
+	}
+
+	// 写 DB(与 CreateResource 完全相同的字段)
+	now := timeNow()
+	resource := &model.Resource{
+		ID:          uuid,
+		Name:        name,
+		Type:        "skill",
+		Path:        dir,
+		Description: description,
+		Metadata:    "{}",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.repo.InsertResource(resource); err != nil {
+		_ = os.RemoveAll(dir)
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	// 关联分组(与 CreateResource 一致,失败不阻断)
+	if groupID != "" && groupID != "0" {
+		_ = s.repo.InsertGroupResource(groupID, resource.ID)
+	}
+
+	return resource, nil
+}
+
+// sanitizeRelPath 校验相对路径,防止穿越攻击
+// - 不能以 / 开头
+// - 不能含 ".." 段
+// - filepath.Clean 后不能跑出当前目录
+func sanitizeRelPath(p string) (string, error) {
+	if p == "" {
+		return "", fmt.Errorf("文件相对路径为空")
+	}
+	// 统一分隔符(前端可能传 / )
+	p = strings.ReplaceAll(p, "\\", "/")
+	if strings.HasPrefix(p, "/") {
+		return "", fmt.Errorf("非法路径(绝对路径): %s", p)
+	}
+	clean := filepath.Clean(p)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") {
+		return "", fmt.Errorf("非法路径(穿越): %s", p)
+	}
+	return clean, nil
+}
 // 参数 id: 资源 ID
 // 返回: 资源实体、错误信息
 func (s *ResourceService) GetResource(id string) (*model.Resource, error) {

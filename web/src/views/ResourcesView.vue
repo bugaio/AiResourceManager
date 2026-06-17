@@ -7,6 +7,7 @@ import ResourceList from '@/components/resource/ResourceList.vue'
 import EmptyState from '@/components/resource/EmptyState.vue'
 import BatchBar from '@/components/common/BatchBar.vue'
 import ResourceForm from '@/components/resource/ResourceForm.vue'
+import ImportSkillDialog from '@/components/resource/ImportSkillDialog.vue'
 import EditorDrawer from '@/components/editor/EditorDrawer.vue'
 import DeployDialog from '@/components/deploy/DeployDialog.vue'
 import { useUiStore } from '@/stores/ui'
@@ -42,6 +43,40 @@ const deployDialogVisible = ref(false)
 const deployResources = ref<Resource[]>([])
 // 部署时关联的分组 ID（从具体分组部署时非空，"全部"时为空）
 const deployGroupId = ref<string | undefined>(undefined)
+
+// Skill 导入相关
+const importInputRef = ref<HTMLInputElement | null>(null)
+const importDialogVisible = ref(false)
+const importFiles = ref<File[]>([])
+const importRootName = ref('')
+
+/** 触发系统目录选择 */
+function handleImportClick() {
+  // 复位 value 让连续选同一目录也能触发 change
+  if (importInputRef.value) {
+    importInputRef.value.value = ''
+    importInputRef.value.click()
+  }
+}
+
+/** 用户选完目录: 收集 File[] 后打开导入弹窗 */
+function handleImportFilesChange(e: Event) {
+  const input = e.target as HTMLInputElement
+  const fl = input.files
+  if (!fl || fl.length === 0) return
+  const arr = Array.from(fl)
+  // 浏览器只能拿到相对路径,根目录名取自 webkitRelativePath 第一段
+  const first = arr[0].webkitRelativePath.split('/')[0] || ''
+  importFiles.value = arr
+  importRootName.value = first
+  importDialogVisible.value = true
+}
+
+/** 导入成功后刷新列表 */
+function handleImportSuccess() {
+  resourceStore.fetchResources()
+  groupStore.fetchGroups()
+}
 
 // WebSocket监听事件
 function handleWsMessage(data: unknown) {
@@ -251,6 +286,20 @@ function handleBatchDeploy() {
             class="max-w-xs"
           />
           <el-button type="primary" @click="handleCreate">新建</el-button>
+          <el-button
+            v-if="uiStore.currentType === 'skill'"
+            @click="handleImportClick"
+          >导入</el-button>
+          <!-- 隐藏的目录选择器 — webkitdirectory 只在 input 上生效 -->
+          <input
+            ref="importInputRef"
+            type="file"
+            class="hidden"
+            multiple
+            webkitdirectory
+            directory
+            @change="handleImportFilesChange"
+          />
         </div>
         <div class="flex items-center gap-1">
           <!-- 网格视图 -->
@@ -342,6 +391,14 @@ function handleBatchDeploy() {
       v-model:visible="deployDialogVisible"
       :resources="deployResources"
       :group-id="deployGroupId"
+    />
+
+    <!-- Skill 导入对话框 -->
+    <ImportSkillDialog
+      v-model:visible="importDialogVisible"
+      :files="importFiles"
+      :root-dir-name="importRootName"
+      @success="handleImportSuccess"
     />
   </AppLayout>
 </template>

@@ -123,9 +123,10 @@ function handleClose() {
         <el-input
           v-model="form.description"
           type="textarea"
-          :rows="3"
-          placeholder="可选，简要描述资源用途"
-          maxlength="500"
+          resize="none"
+          :input-style="{ height: '231px' }"
+          placeholder="可选,简要描述资源用途"
+          maxlength="2000"
         />
       </el-form-item>
 

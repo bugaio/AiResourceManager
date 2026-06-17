@@ -3,6 +3,7 @@
 package handler
 
 import (
+	"io"
 	"strconv"
 
 	"github.com/anthropic/airesourcemanager/internal/model"
@@ -30,6 +31,8 @@ func RegisterResourceRoutes(group *gin.RouterGroup, h *ResourceHandler) {
 	{
 		r.GET("", h.handleList)
 		r.POST("", h.handleCreate)
+		// import-skill 必须在 :id 之前注册
+		r.POST("/import-skill", h.handleImportSkill)
 		// batch 路由必须在 :id 之前注册，避免路由冲突
 		r.DELETE("/batch", h.handleBatchDelete)
 		r.GET("/:id", h.handleGet)
@@ -182,6 +185,62 @@ func (h *ResourceHandler) handleUpdateContent(c *gin.Context) {
 	}
 
 	Success(c, nil)
+}
+
+// handleImportSkill 处理 skill 目录整体导入
+// multipart/form-data 字段:
+//   name        — 从源 SKILL.md frontmatter 解析的名称(必填)
+//   description — 从源 SKILL.md frontmatter 解析的描述(可选)
+//   group_id    — 关联分组 ID(可选)
+//   paths       — 文件相对路径数组(与 files 同序,逐个对应)
+//   files       — 文件数组
+func (h *ResourceHandler) handleImportSkill(c *gin.Context) {
+	name := c.PostForm("name")
+	description := c.PostForm("description")
+	groupID := c.PostForm("group_id")
+	paths := c.PostFormArray("paths")
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		Error(c, model.ErrParamValidation, "解析 multipart 失败: "+err.Error())
+		return
+	}
+	files := form.File["files"]
+
+	if len(paths) != len(files) {
+		Error(c, model.ErrParamValidation, "paths 与 files 长度不一致")
+		return
+	}
+	if len(files) == 0 {
+		Error(c, model.ErrParamValidation, "至少需要一个文件")
+		return
+	}
+
+	imported := make([]service.ImportedSkillFile, 0, len(files))
+	for i, fh := range files {
+		f, err := fh.Open()
+		if err != nil {
+			Error(c, model.ErrResourceFileIO, "读取上传文件失败: "+err.Error())
+			return
+		}
+		data, err := io.ReadAll(f)
+		_ = f.Close()
+		if err != nil {
+			Error(c, model.ErrResourceFileIO, "读取上传内容失败: "+err.Error())
+			return
+		}
+		imported = append(imported, service.ImportedSkillFile{
+			RelPath: paths[i],
+			Data:    data,
+		})
+	}
+
+	resource, err := h.svc.ImportSkill(name, description, groupID, imported)
+	if err != nil {
+		handleBizError(c, err)
+		return
+	}
+	Success(c, resource)
 }
 
 // handleBizError 统一处理业务错误响应

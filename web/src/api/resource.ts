@@ -54,3 +54,30 @@ export function deleteResource(id: string, confirm?: boolean): Promise<unknown> 
 export function batchDelete(ids: string[], confirm?: boolean): Promise<unknown> {
   return request.delete('/resources/batch', { data: { ids, confirm } })
 }
+
+/** 导入 skill: 整目录原样上传,后端落到 ~/.aiManager/skills/{uuid}/
+ * @param params.name 从 SKILL.md frontmatter 解析的名称
+ * @param params.description 从 frontmatter 解析的描述(可选)
+ * @param params.groupId 关联分组(可选)
+ * @param params.files 该 skill 子目录下所有文件(File 来自 webkitdirectory)
+ * @param params.relPaths 与 files 一一对应的相对路径(相对子目录,如 "SKILL.md"、"assets/x.png")
+ */
+export function importSkill(params: {
+  name: string
+  description?: string
+  groupId?: string
+  files: File[]
+  relPaths: string[]
+}): Promise<Resource> {
+  const fd = new FormData()
+  fd.append('name', params.name)
+  if (params.description) fd.append('description', params.description)
+  if (params.groupId) fd.append('group_id', params.groupId)
+  for (let i = 0; i < params.files.length; i++) {
+    fd.append('files', params.files[i])
+    fd.append('paths', params.relPaths[i])
+  }
+  return request.post('/resources/import-skill', fd, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+}
