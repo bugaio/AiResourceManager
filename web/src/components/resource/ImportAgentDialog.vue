@@ -1,30 +1,28 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { fetchResources, importSkill } from '@/api/resource'
+import { fetchResources, importAgent } from '@/api/resource'
 import { parseFrontmatter } from '@/utils/frontmatter'
 
-/** Skill 导入弹窗
+/** SubAgent 导入弹窗
  *
  * 流程:
  * 1. 父组件传入 webkitdirectory 选择后的 File[]
- * 2. 按"根目录/子目录"分组聚合,凡含 SKILL.md 的子目录视为一个 skill
- * 3. 读 SKILL.md 解析 frontmatter 取 name/description
- * 4. 拉全量已有 skill 比对 name,冲突项置灰不可勾选
- * 5. 一键导入: 调 /resources/import-skill,后端把整个子目录原样落到 ~/.aiManager/skills/{uuid}/
+ * 2. 仅扫描用户选择目录的第一级 .md 文件(parts.length === 2)
+ * 3. 解析 frontmatter,有 name 才算有效;description 可空
+ * 4. 与已有 agent 比对 name,冲突项置灰不可勾选
+ * 5. 一键导入: 调 /resources/import-agent,后端原样落到 ~/.aiManager/agents/{uuid}.md
  */
 
 interface ImportItem {
-  /** 源子目录名(列表 key + 副信息) */
-  subdir: string
-  /** 解析得到的 skill 名称 */
+  /** 源文件名(不含路径,如 "foo.md"),用于列表 key */
+  filename: string
+  /** 解析得到的 agent 名称 */
   name: string
-  /** 解析得到的描述 */
+  /** 解析得到的描述(可空) */
   description: string
-  /** 该子目录下所有文件 */
-  files: File[]
-  /** 与 files 同序的相对路径(相对子目录) */
-  relPaths: string[]
+  /** 源文件 */
+  file: File
   /** 是否勾选 */
   selected: boolean
   /** 是否冲突 */
@@ -64,7 +62,7 @@ async function loadItems() {
       items.value = []
       return
     }
-    const existing = await fetchResources({ type: 'skill', page: 1, page_size: 10000 })
+    const existing = await fetchResources({ type: 'agent', page: 1, page_size: 10000 })
     const existingNames = new Set(existing.list.map(r => r.name))
     // 同批次内重名也算冲突(后端 (type,name) 唯一)
     const seen = new Set<string>()
@@ -85,45 +83,24 @@ async function loadItems() {
   }
 }
 
-/** 按"根目录/子目录"聚合所有文件,筛出含 SKILL.md 的子目录 */
+/** 仅取用户所选目录第一级 .md 文件 */
 async function scanFiles(files: File[]): Promise<Omit<ImportItem, 'selected' | 'conflict'>[]> {
-  // key = 子目录名, value = { files, relPaths, skillFile }
-  const groups = new Map<string, { files: File[]; relPaths: string[]; skillFile: File | null }>()
-
+  const result: Omit<ImportItem, 'selected' | 'conflict'>[] = []
   for (const f of files) {
     const parts = f.webkitRelativePath.split('/')
-    // 至少要有 根目录/子目录/文件 三段
-    if (parts.length < 3) continue
-    const subdir = parts[1]
-    // 子目录下的相对路径(相对该 skill 子目录)
-    const relPath = parts.slice(2).join('/')
-
-    let g = groups.get(subdir)
-    if (!g) {
-      g = { files: [], relPaths: [], skillFile: null }
-      groups.set(subdir, g)
-    }
-    g.files.push(f)
-    g.relPaths.push(relPath)
-    // 直接子文件中名为 SKILL.md 的视为 frontmatter 来源(必须 parts.length === 3)
-    if (parts.length === 3 && parts[2] === 'SKILL.md') {
-      g.skillFile = f
-    }
-  }
-
-  const result: Omit<ImportItem, 'selected' | 'conflict'>[] = []
-  for (const [subdir, g] of groups) {
-    if (!g.skillFile) continue // 没 SKILL.md 的子目录跳过
-    const skillText = await g.skillFile.text()
-    const meta = parseFrontmatter(skillText)
-    const name = (meta.name || subdir).trim()
+    // 必须刚好 2 段: 根目录 / 文件
+    if (parts.length !== 2) continue
+    if (!parts[1].toLowerCase().endsWith('.md')) continue
+    const text = await f.text()
+    const meta = parseFrontmatter(text)
+    const name = (meta.name || '').trim()
+    // 仅 name 解析成功才导入
     if (!name) continue
     result.push({
-      subdir,
+      filename: parts[1],
       name,
       description: (meta.description || '').trim(),
-      files: g.files,
-      relPaths: g.relPaths,
+      file: f,
     })
   }
   return result
@@ -152,11 +129,10 @@ async function handleImport() {
   const fails: string[] = []
   for (const item of checkedItems.value) {
     try {
-      await importSkill({
+      await importAgent({
         name: item.name,
         description: item.description || undefined,
-        files: item.files,
-        relPaths: item.relPaths,
+        file: item.file,
       })
       ok++
     } catch (e: any) {
@@ -187,7 +163,7 @@ async function handleImport() {
     <template #header>
       <div>
         <div class="text-lg font-semibold text-gray-800 dark:text-gray-100">
-          Skill 导入确认
+          SubAgent 导入确认
         </div>
         <div
           class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate"
@@ -198,7 +174,7 @@ async function handleImport() {
 
     <div v-if="loading" class="py-10 text-center text-gray-400 text-sm">扫描中...</div>
     <div v-else-if="items.length === 0" class="py-10 text-center text-gray-400 text-sm">
-      未找到包含 SKILL.md 的直接子文件夹
+      未找到含 frontmatter name 的 .md 文件
     </div>
     <template v-else>
       <div class="flex items-center gap-3 pb-2 border-b border-gray-200 dark:border-gray-700">
@@ -216,7 +192,7 @@ async function handleImport() {
       <div class="max-h-[360px] overflow-y-auto py-1">
         <div
           v-for="item in items"
-          :key="item.subdir"
+          :key="item.filename"
           class="flex items-center justify-between gap-2 px-2 py-2 rounded hover:bg-gray-50 dark:hover:bg-gray-800/50"
           :class="item.conflict ? 'opacity-60' : ''"
         >

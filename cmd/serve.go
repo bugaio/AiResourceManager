@@ -153,6 +153,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 
 	// 启动文件监听服务
 	watcherSvc := service.NewWatcherService(hub, resourceRepo, baseDir, logger)
+	// 注入到 ResourceService,使主动删除时抑制 fsnotify 误报
+	resourceSvc.SetWatcherService(watcherSvc)
 	if err := watcherSvc.Start(); err != nil {
 		sugar.Warnf("文件监听服务启动失败: %v", err)
 	}

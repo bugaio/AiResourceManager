@@ -8,6 +8,7 @@ import EmptyState from '@/components/resource/EmptyState.vue'
 import BatchBar from '@/components/common/BatchBar.vue'
 import ResourceForm from '@/components/resource/ResourceForm.vue'
 import ImportSkillDialog from '@/components/resource/ImportSkillDialog.vue'
+import ImportAgentDialog from '@/components/resource/ImportAgentDialog.vue'
 import EditorDrawer from '@/components/editor/EditorDrawer.vue'
 import DeployDialog from '@/components/deploy/DeployDialog.vue'
 import { useUiStore } from '@/stores/ui'
@@ -44,9 +45,10 @@ const deployResources = ref<Resource[]>([])
 // 部署时关联的分组 ID（从具体分组部署时非空，"全部"时为空）
 const deployGroupId = ref<string | undefined>(undefined)
 
-// Skill 导入相关
+// 导入相关(skill / agent 共用同一个 input + 同一份 files,按当前 type 路由到对应弹窗)
 const importInputRef = ref<HTMLInputElement | null>(null)
-const importDialogVisible = ref(false)
+const importSkillVisible = ref(false)
+const importAgentVisible = ref(false)
 const importFiles = ref<File[]>([])
 const importRootName = ref('')
 
@@ -59,7 +61,7 @@ function handleImportClick() {
   }
 }
 
-/** 用户选完目录: 收集 File[] 后打开导入弹窗 */
+/** 用户选完目录: 收集 File[] 后按当前 type 打开对应导入弹窗 */
 function handleImportFilesChange(e: Event) {
   const input = e.target as HTMLInputElement
   const fl = input.files
@@ -69,7 +71,11 @@ function handleImportFilesChange(e: Event) {
   const first = arr[0].webkitRelativePath.split('/')[0] || ''
   importFiles.value = arr
   importRootName.value = first
-  importDialogVisible.value = true
+  if (uiStore.currentType === 'skill') {
+    importSkillVisible.value = true
+  } else if (uiStore.currentType === 'agent') {
+    importAgentVisible.value = true
+  }
 }
 
 /** 导入成功后刷新列表 */
@@ -86,10 +92,6 @@ function handleWsMessage(data: unknown) {
   // 部署同步事件
   if (msg.type === 'deploy:synced') {
     deployStore.fetchTargets()
-
-  // 切换分组时清空选中状态
-  selectionStore.clearAll()
-
     ElMessage.info('部署已自动同步')
   }
 
@@ -287,7 +289,7 @@ function handleBatchDeploy() {
           />
           <el-button type="primary" @click="handleCreate">新建</el-button>
           <el-button
-            v-if="uiStore.currentType === 'skill'"
+            v-if="uiStore.currentType === 'skill' || uiStore.currentType === 'agent'"
             @click="handleImportClick"
           >导入</el-button>
           <!-- 隐藏的目录选择器 — webkitdirectory 只在 input 上生效 -->
@@ -367,8 +369,22 @@ function handleBatchDeploy() {
         </div>
       </template>
 
-      <!-- 批量操作栏 -->
-      <BatchBar @batch-deploy="handleBatchDeploy" />
+      <!-- 批量操作栏 — 三种 type 各挂载独立实例,通过 v-show 控制显隐(不销毁) -->
+      <BatchBar
+        v-show="uiStore.currentType === 'skill'"
+        type="skill"
+        @batch-deploy="handleBatchDeploy"
+      />
+      <BatchBar
+        v-show="uiStore.currentType === 'mcp'"
+        type="mcp"
+        @batch-deploy="handleBatchDeploy"
+      />
+      <BatchBar
+        v-show="uiStore.currentType === 'agent'"
+        type="agent"
+        @batch-deploy="handleBatchDeploy"
+      />
     </div>
 
     <!-- 资源表单对话框 -->
@@ -395,7 +411,15 @@ function handleBatchDeploy() {
 
     <!-- Skill 导入对话框 -->
     <ImportSkillDialog
-      v-model:visible="importDialogVisible"
+      v-model:visible="importSkillVisible"
+      :files="importFiles"
+      :root-dir-name="importRootName"
+      @success="handleImportSuccess"
+    />
+
+    <!-- SubAgent 导入对话框 -->
+    <ImportAgentDialog
+      v-model:visible="importAgentVisible"
       :files="importFiles"
       :root-dir-name="importRootName"
       @success="handleImportSuccess"

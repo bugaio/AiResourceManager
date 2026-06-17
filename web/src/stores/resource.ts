@@ -68,7 +68,7 @@ export const useResourceStore = defineStore('resource', () => {
     currentGroupId.value = id
     page.value = 1
     fetchResources()
-    // 切换分组时清空选中状态
+    // 切换分组时清空选中状态(同 type 内,符合预期)
     useSelectionStore().clearAll()
   }
 

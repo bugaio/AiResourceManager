@@ -17,9 +17,10 @@ import (
 
 // ResourceService 资源业务服务
 type ResourceService struct {
-	repo      *repo.ResourceRepo
-	baseDir   string // ~/.aiManager 根目录
-	deploySvc *DeployService
+	repo       *repo.ResourceRepo
+	baseDir    string // ~/.aiManager 根目录
+	deploySvc  *DeployService
+	watcherSvc *WatcherService
 }
 
 // NewResourceService 创建资源服务实例
@@ -33,6 +34,11 @@ func NewResourceService(repo *repo.ResourceRepo, baseDir string) *ResourceServic
 // SetDeployService 注入部署服务（用于删除资源时级联撤销部署）
 func (s *ResourceService) SetDeployService(deploySvc *DeployService) {
 	s.deploySvc = deploySvc
+}
+
+// SetWatcherService 注入文件监听服务(用于程序主动删文件时抑制误报的 deleted 广播)
+func (s *ResourceService) SetWatcherService(w *WatcherService) {
+	s.watcherSvc = w
 }
 
 // CreateResource 创建资源
@@ -193,6 +199,61 @@ func sanitizeRelPath(p string) (string, error) {
 	}
 	return clean, nil
 }
+
+// ImportAgent 导入一个 agent: 把外部 .md 文件原样写入 {baseDir}/agents/{uuid}.md
+// 参数 name: 从 frontmatter 解析得到的名称(必填)
+// 参数 description: 从 frontmatter 解析得到的描述(可空)
+// 参数 groupID: 可选关联分组
+// 参数 data: 源 .md 文件原始字节
+// 返回: 创建的资源、错误
+func (s *ResourceService) ImportAgent(name, description, groupID string, data []byte) (*model.Resource, error) {
+	if strings.TrimSpace(name) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
+	}
+	if len(data) == 0 {
+		return nil, model.NewBizError(model.ErrParamValidation, "文件内容为空")
+	}
+
+	// 同类型重名校验(与 CreateResource 一致)
+	exists, err := s.repo.CheckNameExists("agent", name, "")
+	if err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if exists {
+		return nil, model.NewBizError(model.ErrResourceExists, "同类型下资源名称已存在")
+	}
+
+	uuid := util.NewUUID()
+	dir := filepath.Join(s.baseDir, "agents")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 agents 目录失败: "+err.Error())
+	}
+	filePath := filepath.Join(dir, uuid+".md")
+	if err := os.WriteFile(filePath, data, 0644); err != nil {
+		return nil, model.NewBizError(model.ErrResourceFileIO, "写入 agent 文件失败: "+err.Error())
+	}
+
+	now := timeNow()
+	resource := &model.Resource{
+		ID:          uuid,
+		Name:        name,
+		Type:        "agent",
+		Path:        filePath,
+		Description: description,
+		Metadata:    "{}",
+		CreatedAt:   now,
+		UpdatedAt:   now,
+	}
+	if err := s.repo.InsertResource(resource); err != nil {
+		_ = os.Remove(filePath)
+		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	if groupID != "" && groupID != "0" {
+		_ = s.repo.InsertGroupResource(groupID, resource.ID)
+	}
+	return resource, nil
+}
 // 参数 id: 资源 ID
 // 返回: 资源实体、错误信息
 func (s *ResourceService) GetResource(id string) (*model.Resource, error) {
@@ -300,7 +361,10 @@ func (s *ResourceService) DeleteResource(id string, confirm bool) (interface{}, 
 		}
 	}
 
-	// 删除文件系统
+	// 删除文件系统 — 先告诉 watcher 这是程序主动删除,避免被推送为"外部删除"
+	if s.watcherSvc != nil {
+		s.watcherSvc.SuppressUUID(id, 5*time.Second)
+	}
 	s.deleteFiles(r.Type, r.Path)
 
 	// 删除数据库记录

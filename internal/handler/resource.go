@@ -31,8 +31,9 @@ func RegisterResourceRoutes(group *gin.RouterGroup, h *ResourceHandler) {
 	{
 		r.GET("", h.handleList)
 		r.POST("", h.handleCreate)
-		// import-skill 必须在 :id 之前注册
+		// import-skill / import-agent 必须在 :id 之前注册
 		r.POST("/import-skill", h.handleImportSkill)
+		r.POST("/import-agent", h.handleImportAgent)
 		// batch 路由必须在 :id 之前注册，避免路由冲突
 		r.DELETE("/batch", h.handleBatchDelete)
 		r.GET("/:id", h.handleGet)
@@ -236,6 +237,42 @@ func (h *ResourceHandler) handleImportSkill(c *gin.Context) {
 	}
 
 	resource, err := h.svc.ImportSkill(name, description, groupID, imported)
+	if err != nil {
+		handleBizError(c, err)
+		return
+	}
+	Success(c, resource)
+}
+
+// handleImportAgent 处理 agent 单文件导入
+// multipart/form-data 字段:
+//   name        — 从源 .md frontmatter 解析的名称(必填)
+//   description — 从源 .md frontmatter 解析的描述(可选)
+//   group_id    — 关联分组 ID(可选)
+//   file        — 源 .md 文件(单文件)
+func (h *ResourceHandler) handleImportAgent(c *gin.Context) {
+	name := c.PostForm("name")
+	description := c.PostForm("description")
+	groupID := c.PostForm("group_id")
+
+	fh, err := c.FormFile("file")
+	if err != nil {
+		Error(c, model.ErrParamValidation, "缺少 file 字段: "+err.Error())
+		return
+	}
+	f, err := fh.Open()
+	if err != nil {
+		Error(c, model.ErrResourceFileIO, "读取上传文件失败: "+err.Error())
+		return
+	}
+	data, err := io.ReadAll(f)
+	_ = f.Close()
+	if err != nil {
+		Error(c, model.ErrResourceFileIO, "读取上传内容失败: "+err.Error())
+		return
+	}
+
+	resource, err := h.svc.ImportAgent(name, description, groupID, data)
 	if err != nil {
 		handleBizError(c, err)
 		return

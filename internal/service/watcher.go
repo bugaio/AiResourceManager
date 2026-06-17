@@ -23,6 +23,7 @@ type WatcherService struct {
 	repo       *repo.ResourceRepo
 	baseDir    string
 	lastEvents map[string]time.Time // 去重: path → 最后处理时间
+	suppressed map[string]time.Time // 抑制: uuid → 抑制截止时间(程序自己发起的删除)
 	mu         sync.Mutex
 	stopCh     chan struct{}
 	logger     *zap.Logger
@@ -46,9 +47,36 @@ func NewWatcherService(hub *Hub, resourceRepo *repo.ResourceRepo, baseDir string
 		repo:       resourceRepo,
 		baseDir:    baseDir,
 		lastEvents: make(map[string]time.Time),
+		suppressed: make(map[string]time.Time),
 		stopCh:     make(chan struct{}),
 		logger:     logger,
 	}
+}
+
+// SuppressUUID 抑制指定 UUID 在接下来 ttl 时间内产生的 deleted 广播
+// 用于 ResourceService.DeleteResource 程序主动删文件时,避免被 fsnotify 误报为"外部删除"
+func (w *WatcherService) SuppressUUID(uuid string, ttl time.Duration) {
+	if uuid == "" {
+		return
+	}
+	w.mu.Lock()
+	w.suppressed[uuid] = time.Now().Add(ttl)
+	w.mu.Unlock()
+}
+
+// isSuppressed 检查 UUID 是否仍在抑制窗口内,顺便清理过期项
+func (w *WatcherService) isSuppressed(uuid string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	deadline, ok := w.suppressed[uuid]
+	if !ok {
+		return false
+	}
+	if time.Now().After(deadline) {
+		delete(w.suppressed, uuid)
+		return false
+	}
+	return true
 }
 
 // Start 启动文件监听
@@ -185,7 +213,11 @@ func (w *WatcherService) handleEvent(event fsnotify.Event) {
 		w.broadcast(msg)
 
 	} else if event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
-		// 文件被删除或重命名
+		// 文件被删除或重命名 — 若是程序自己发起的删除,跳过广播(防止误报)
+		if w.isSuppressed(uuid) {
+			w.logger.Debug("跳过被抑制的 deleted 广播", zap.String("uuid", uuid))
+			return
+		}
 		w.logger.Warn("资源文件被删除", zap.String("uuid", uuid), zap.String("path", path))
 
 		msg := WatcherEvent{
