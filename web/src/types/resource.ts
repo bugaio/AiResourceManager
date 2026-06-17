@@ -1,5 +1,5 @@
 /** 资源类型 */
-export type ResourceType = 'skill' | 'mcp' | 'agent'
+export type ResourceType = 'skill' | 'agent' | 'config'
 
 /** 资源接口 */
 export interface Resource {

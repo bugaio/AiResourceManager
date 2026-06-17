@@ -11,7 +11,7 @@ import type { ResourceType } from '@/types/resource'
 
 /** 批量操作栏 — 选中资源后底部显示
  *
- * 每个 ResourceType 各拥有一个独立实例(skill / mcp / agent),
+ * 每个 ResourceType 各拥有一个独立实例(skill / agent / config),
  * 通过 `type` prop 锁定,只读写自己 type 的选择集合,与其他模块完全隔离。
  */
 const props = defineProps<{

@@ -3,6 +3,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -13,6 +14,9 @@ import (
 	"github.com/anthropic/airesourcemanager/internal/model"
 	"github.com/anthropic/airesourcemanager/internal/repo"
 	"github.com/anthropic/airesourcemanager/internal/util"
+	yamlv3 "go.yaml.in/yaml/v3"
+
+	"github.com/pelletier/go-toml/v2"
 )
 
 // DeployService 部署管理业务服务
@@ -68,18 +72,19 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 	}
 
 	// 3. 按资源类型处理目标路径
-	//    - mcp: 目标路径必须是一个已存在的 .json 文件（合并写入），不存在则报错
+	//    - config: 目标路径必须是一个已存在的配置文件（.json/.yaml/.yml/.toml）
 	//    - skill/agent: 目标路径是目录，不存在则创建
-	isMCP := resources[0].Type == "mcp"
-	if isMCP {
-		if filepath.Ext(targetPath) != ".json" {
-			return nil, model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("MCP 目标路径必须是 .json 文件: %s", targetPath))
+	isConfig := resources[0].Type == "config"
+	if isConfig {
+		if !util.IsConfigFile(targetPath) {
+			return nil, model.NewBizError(model.ErrDeployInvalid,
+				fmt.Sprintf("Config 目标文件后缀必须是 .json/.yaml/.yml/.toml: %s", targetPath))
 		}
 		if !util.FileExists(targetPath) {
 			return nil, model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("目标文件不存在，请先创建: %s", targetPath))
 		}
 		if util.IsDir(targetPath) {
-			return nil, model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("MCP 目标路径必须是文件而非目录: %s", targetPath))
+			return nil, model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("Config 目标路径必须是文件而非目录: %s", targetPath))
 		}
 	} else {
 		if err := util.EnsureDir(targetPath); err != nil {
@@ -107,8 +112,8 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 		case "agent":
 			linkPath, err = s.deployAgent(&res, targetPath, req.Force)
 			deployType = "symlink"
-		case "mcp":
-			linkPath, err = s.deployMCP(&res, targetPath, req.Force)
+		case "config":
+			linkPath, err = s.deployConfig(&res, targetPath, req.Force)
 			deployType = "merge"
 		default:
 			err = model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("不支持的资源类型: %s", res.Type))
@@ -219,7 +224,7 @@ func (s *DeployService) Undeploy(deploymentID string) error {
 	// 逐项撤销
 	for _, item := range items {
 		if deployment.DeployType == "merge" {
-			s.removeMCPResourceKeys(deployment.TargetPath, item.ResourceID)
+			s.removeConfigResourceKeys(deployment.TargetPath, item.ResourceID)
 		} else {
 			if _, e := os.Lstat(item.LinkPath); e == nil {
 				os.Remove(item.LinkPath)
@@ -239,7 +244,7 @@ func (s *DeployService) Undeploy(deploymentID string) error {
 }
 
 // GetTargets 获取目标路径聚合信息
-// 参数 resourceType: 资源类型过滤（skill/agent/mcp）；为空则不过滤返回全部
+// 参数 resourceType: 资源类型过滤（skill/agent/config）；为空则不过滤返回全部
 // 返回: 目标路径列表、错误信息
 // 说明: deployment 表本身无 type 字段（skill 与 agent 的 deploy_type 同为 symlink，
 //
@@ -398,8 +403,8 @@ func (s *DeployService) RepairItem(deploymentID, itemID string) error {
 		_, err = s.deploySkill(resource, deployment.TargetPath, true)
 	case "agent":
 		_, err = s.deployAgent(resource, deployment.TargetPath, true)
-	case "mcp":
-		_, err = s.deployMCP(resource, deployment.TargetPath, true)
+	case "config":
+		_, err = s.deployConfig(resource, deployment.TargetPath, true)
 	}
 
 	return err
@@ -422,7 +427,7 @@ func (s *DeployService) CleanItem(itemID string, undeploy bool) error {
 		dep, _ := s.deployRepo.GetDeploymentByID(item.DeploymentID)
 		if dep != nil {
 			if dep.DeployType == "merge" {
-				s.removeMCPResourceKeys(dep.TargetPath, item.ResourceID)
+				s.removeConfigResourceKeys(dep.TargetPath, item.ResourceID)
 			} else {
 				if _, e := os.Lstat(item.LinkPath); e == nil {
 					os.Remove(item.LinkPath)
@@ -476,8 +481,8 @@ func (s *DeployService) DeploySingleResourceToTarget(deploymentID string, resour
 		linkPath, err = s.deploySkill(resource, targetPath, true)
 	case "agent":
 		linkPath, err = s.deployAgent(resource, targetPath, true)
-	case "mcp":
-		linkPath, err = s.deployMCP(resource, targetPath, true)
+	case "config":
+		linkPath, err = s.deployConfig(resource, targetPath, true)
 	default:
 		return nil
 	}
@@ -519,7 +524,7 @@ func (s *DeployService) UndeployResourceFromTarget(resourceID, deploymentID, tar
 			continue
 		}
 		if deployType == "merge" {
-			s.removeMCPResourceKeys(targetPath, item.ResourceID)
+			s.removeConfigResourceKeys(targetPath, item.ResourceID)
 		} else {
 			if _, e := os.Lstat(item.LinkPath); e == nil {
 				os.Remove(item.LinkPath)
@@ -664,94 +669,61 @@ func (s *DeployService) deployAgent(resource *model.Resource, targetPath string,
 	return linkDst, nil
 }
 
-// deployMCP 部署 mcp 类型资源（深度合并到目标 .json 文件）
-// targetPath 是一个已存在的 .json 文件（如 claude_desktop_config.json）
-// 采用 lodash 式深度合并：从第一层开始递归合并嵌套对象，标量/数组由源覆盖目标
-// 返回 mcpServers 下新增/覆盖的 key 名（用于 link_path / 健康检查）
-func (s *DeployService) deployMCP(resource *model.Resource, targetPath string, force bool) (string, error) {
-	// 读取资源自身的 MCP 配置（完整 JSON）
-	mcpFile := filepath.Join(s.baseDir, "mcps", resource.ID+".jsonc")
-	data, err := os.ReadFile(mcpFile)
+// deployConfig 部署 config 类型资源（深度合并到目标配置文件中）
+// targetPath 是一个已存在的配置文件（.json/.yaml/.yml/.toml）
+// 采用 lodash 式深度合并：嵌套对象递归合并，标量/数组由源覆盖目标
+// 返回 link_path 用 key（顶层第一个 key；为兼容历史 MCP 用法，若存在 mcpServers 子键则优先取其下第一项）
+func (s *DeployService) deployConfig(resource *model.Resource, targetPath string, force bool) (string, error) {
+	// 1. 检测目标格式
+	format := util.DetectConfigFormat(targetPath)
+	if format == "" {
+		return "", model.NewBizError(model.ErrDeployInvalid,
+			fmt.Sprintf("Config 目标文件后缀必须是 .json/.yaml/.yml/.toml: %s", targetPath))
+	}
+
+	// 2. 读取资源自身的配置文件（路径在 DB 中以 {uuid}.{ext} 形式存储,后缀由创建时决定）
+	cfgFragment, _, err := s.readConfigFragment(resource)
 	if err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("读取 MCP 文件失败: %v", err))
+		return "", model.NewBizError(model.ErrDeployFailed, err.Error())
 	}
-	jsonData, err := util.ParseJSONC(data)
-	if err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("解析 JSONC 失败: %v", err))
-	}
-	var mcpConfig map[string]interface{}
-	if err := json.Unmarshal(jsonData, &mcpConfig); err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("解析 MCP JSON 失败: %v", err))
-	}
-	if len(mcpConfig) == 0 {
-		return "", model.NewBizError(model.ErrDeployFailed, "MCP 配置文件为空")
+	if len(cfgFragment) == 0 {
+		return "", model.NewBizError(model.ErrDeployFailed, "Config 片段为空")
 	}
 
-	// 收集新 MCP 的所有顶层 key（合并时会写入目标的 key）
-	newKeys := make(map[string]bool)
-	for k := range mcpConfig {
-		newKeys[k] = true
-	}
-	// 若有 mcpServers，也收集其子 key
-	if servers, ok := mcpConfig["mcpServers"].(map[string]interface{}); ok {
-		for k := range servers {
-			newKeys[k] = true
+	// 3. 收集本次会写入目标的所有顶层 key(用于冲突检测)
+	newKeys := flatKeys(cfgFragment)
+
+	// 4. 链接 path(健康检查/撤销的锚点)
+	//    优先 mcpServers 子键下的第一项(兼容历史),否则取顶层第一项
+	linkPath := pickLinkPath(cfgFragment)
+
+	// 5. 读取目标现有内容(用于冲突检测)
+	var targetKeys map[string]interface{}
+	if util.FileExists(targetPath) {
+		data, rErr := os.ReadFile(targetPath)
+		if rErr == nil && len(data) > 0 {
+			targetKeys, _ = util.ParseConfigBytes(data, format)
 		}
+	}
+	if targetKeys == nil {
+		targetKeys = map[string]interface{}{}
 	}
 
-	// 提取 serverName 用作 link_path（优先 mcpServers 下，其次顶层第一个 key）
-	var serverName string
-	if servers, ok := mcpConfig["mcpServers"].(map[string]interface{}); ok {
-		for k := range servers {
-			serverName = k
-			break
-		}
-	}
-	if serverName == "" {
-		for k := range mcpConfig {
-			serverName = k
-			break
-		}
-	}
-
-	// 读取目标 .json 文件
-	targetData, err := os.ReadFile(targetPath)
-	if err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("读取目标文件失败: %v", err))
-	}
-	var targetJSON map[string]interface{}
-	if len(targetData) > 0 {
-		stdJSON, parseErr := util.ParseJSONC(targetData)
-		if parseErr != nil {
-			stdJSON = targetData
-		}
-		if err := json.Unmarshal(stdJSON, &targetJSON); err != nil {
-			return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("解析目标 JSON 失败: %v", err))
-		}
-	}
-	if targetJSON == nil {
-		targetJSON = map[string]interface{}{}
-	}
-
-	// 查找该 targetPath 下已有的 MCP 部署，检测 key 冲突
-	conflictResources := s.findMCPConflicts(targetPath, resource.ID, newKeys)
-
-	// 检测目标文件中"原始内容"（非部署管理的 key）与新 MCP 的 key 冲突
+	// 6. 检测冲突
+	conflictResources := s.findConfigConflicts(targetPath, resource.ID, newKeys)
 	managedKeys := s.getManagedKeys(targetPath, resource.ID)
 	var originalConflictKeys []string
 	for k := range newKeys {
 		if managedKeys[k] {
-			continue // 该 key 由某个已部署 MCP 管理，冲突已在 conflictResources 中处理
+			continue
 		}
-		if _, exists := targetJSON[k]; exists {
+		if _, exists := targetKeys[k]; exists {
 			originalConflictKeys = append(originalConflictKeys, k)
 		}
 	}
-
 	hasConflict := len(conflictResources) > 0 || len(originalConflictKeys) > 0
 
 	if hasConflict && !force {
-		// 构造冲突名列表：已部署 MCP 名 + "原始内容"
 		names := make([]string, 0)
 		for _, cr := range conflictResources {
 			names = append(names, cr.name)
@@ -766,57 +738,67 @@ func (s *DeployService) deployMCP(resource *model.Resource, targetPath string, f
 		)
 	}
 
-	// force 覆盖：先撤销冲突 MCP 的部署
+	// 7. force 覆盖：先撤销冲突资源的部署
 	if len(conflictResources) > 0 && force {
 		for _, cr := range conflictResources {
-			s.undeployMCPResource(cr.resourceID, cr.deploymentID, targetPath)
-		}
-		// 重新读取目标文件
-		targetData, err = os.ReadFile(targetPath)
-		if err != nil {
-			return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("读取目标文件失败: %v", err))
-		}
-		targetJSON = map[string]interface{}{}
-		if len(targetData) > 0 {
-			stdJSON, parseErr := util.ParseJSONC(targetData)
-			if parseErr != nil {
-				stdJSON = targetData
-			}
-			json.Unmarshal(stdJSON, &targetJSON)
+			s.undeployConfigResource(cr.resourceID, cr.deploymentID, targetPath)
 		}
 	}
 
-	// force 覆盖：移除目标中冲突的原始 key
-	if len(originalConflictKeys) > 0 && force {
-		for _, k := range originalConflictKeys {
-			delete(targetJSON, k)
-		}
+	// 8. 实际合并写入(由 format 决定 JSON/YAML/TOML 分支)
+	if err := util.MergeConfigToFile(targetPath, format, cfgFragment); err != nil {
+		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("合并写入失败: %v", err))
 	}
 
-	// 直接从第一层深度合并
-	merged := util.DeepMerge(targetJSON, mcpConfig)
-
-	output, err := json.MarshalIndent(merged, "", "  ")
-	if err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("序列化目标 JSON 失败: %v", err))
-	}
-	if err := os.WriteFile(targetPath, output, 0644); err != nil {
-		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("写入目标文件失败: %v", err))
-	}
-
-	return serverName, nil
+	return linkPath, nil
 }
 
-// mcpConflictInfo 冲突的 MCP 资源信息
-type mcpConflictInfo struct {
+// flatKeys 把嵌套 map 的所有 key 拍平(顶层 + 一层子键,如 mcpServers 的子键)
+// 用于冲突检测: 一次部署实际"占用了"哪些 key,撤销时要精准删除
+func flatKeys(m map[string]interface{}) map[string]bool {
+	out := map[string]bool{}
+	for k, v := range m {
+		out[k] = true
+		if sub, ok := v.(map[string]interface{}); ok {
+			for sk := range sub {
+				out[sk] = true
+			}
+		}
+	}
+	return out
+}
+
+// pickLinkPath 选择 link_path: 优先 mcpServers 子键下第一项,否则顶层第一项
+func pickLinkPath(m map[string]interface{}) string {
+	if servers, ok := m["mcpServers"].(map[string]interface{}); ok {
+		for k := range servers {
+			return k
+		}
+	}
+	for k := range m {
+		return k
+	}
+	return ""
+}
+
+// readConfigFragment 从 config 资源存储路径读取片段 map
+// 资源 path 由 createFiles 写入,后缀由用户创建时选定(默认 .json)
+func (s *DeployService) readConfigFragment(resource *model.Resource) (map[string]interface{}, util.ConfigFormat, error) {
+	if resource.Path == "" {
+		return nil, "", fmt.Errorf("资源 path 为空")
+	}
+	return util.ReadConfigFragment(resource.Path)
+}
+
+// configConflictInfo 冲突的 Config 资源信息
+type configConflictInfo struct {
 	resourceID   string
 	deploymentID string
 	name         string
 }
 
-// findMCPConflicts 查找目标路径下已部署的 MCP 中与新 key 集合有冲突的资源
-// 不依赖 link_path（它只存第一个 key），而是读每个已部署 MCP 资源的实际配置，取全部 key 做交集
-func (s *DeployService) findMCPConflicts(targetPath, selfResourceID string, newKeys map[string]bool) []mcpConflictInfo {
+// findConfigConflicts 查找目标路径下已部署的 Config 中与新 key 集合有冲突的资源
+func (s *DeployService) findConfigConflicts(targetPath, selfResourceID string, newKeys map[string]bool) []configConflictInfo {
 	allDeps, err := s.deployRepo.GetDeploymentsByTarget()
 	if err != nil {
 		return nil
@@ -826,7 +808,7 @@ func (s *DeployService) findMCPConflicts(targetPath, selfResourceID string, newK
 		return nil
 	}
 
-	var conflicts []mcpConflictInfo
+	var conflicts []configConflictInfo
 	seen := map[string]bool{}
 
 	for _, dep := range deployments {
@@ -841,9 +823,7 @@ func (s *DeployService) findMCPConflicts(targetPath, selfResourceID string, newK
 			if seen[item.ResourceID] {
 				continue
 			}
-			// 读该已部署 MCP 资源的实际配置，获取其所有 key
-			existingKeys := s.getMCPResourceKeys(item.ResourceID)
-			// 检查与新 MCP 的 key 是否有交集
+			existingKeys := s.getConfigResourceKeys(item.ResourceID)
 			hasOverlap := false
 			for k := range existingKeys {
 				if newKeys[k] {
@@ -857,7 +837,7 @@ func (s *DeployService) findMCPConflicts(targetPath, selfResourceID string, newK
 				if r, rErr := s.resourceRepo.GetResourceByID(item.ResourceID); rErr == nil && r != nil {
 					resName = r.Name
 				}
-				conflicts = append(conflicts, mcpConflictInfo{
+				conflicts = append(conflicts, configConflictInfo{
 					resourceID:   item.ResourceID,
 					deploymentID: dep.ID,
 					name:         resName,
@@ -868,35 +848,29 @@ func (s *DeployService) findMCPConflicts(targetPath, selfResourceID string, newK
 	return conflicts
 }
 
-// getMCPResourceKeys 读取 MCP 资源文件，返回其所有顶层 key + mcpServers 子 key
-func (s *DeployService) getMCPResourceKeys(resourceID string) map[string]bool {
+// getConfigResourceKeys 读取 Config 资源文件，返回其所有顶层 key + 一层子 key
+func (s *DeployService) getConfigResourceKeys(resourceID string) map[string]bool {
 	keys := map[string]bool{}
 	r, err := s.resourceRepo.GetResourceByID(resourceID)
 	if err != nil || r == nil {
 		return keys
 	}
-	mcpFile := filepath.Join(s.baseDir, "mcps", r.ID+".jsonc")
-	data, err := os.ReadFile(mcpFile)
-	if err != nil {
+	cfg, _, err := s.readConfigFragment(r)
+	if err != nil || cfg == nil {
 		return keys
 	}
-	jsonData, _ := util.ParseJSONC(data)
-	var cfg map[string]interface{}
-	if json.Unmarshal(jsonData, &cfg) != nil {
-		return keys
-	}
-	for k := range cfg {
+	for k, v := range cfg {
 		keys[k] = true
-	}
-	if servers, ok := cfg["mcpServers"].(map[string]interface{}); ok {
-		for k := range servers {
-			keys[k] = true
+		if sub, ok := v.(map[string]interface{}); ok {
+			for sk := range sub {
+				keys[sk] = true
+			}
 		}
 	}
 	return keys
 }
 
-// getManagedKeys 获取 targetPath 下所有已部署 MCP 管理的 key 集合（排除 selfResourceID）
+// getManagedKeys 获取 targetPath 下所有已部署 Config 管理的 key 集合（排除 selfResourceID）
 func (s *DeployService) getManagedKeys(targetPath, selfResourceID string) map[string]bool {
 	managed := map[string]bool{}
 	allDeps, err := s.deployRepo.GetDeploymentsByTarget()
@@ -916,7 +890,7 @@ func (s *DeployService) getManagedKeys(targetPath, selfResourceID string) map[st
 			if item.ResourceID == selfResourceID {
 				continue
 			}
-			for k := range s.getMCPResourceKeys(item.ResourceID) {
+			for k := range s.getConfigResourceKeys(item.ResourceID) {
 				managed[k] = true
 			}
 		}
@@ -924,199 +898,181 @@ func (s *DeployService) getManagedKeys(targetPath, selfResourceID string) map[st
 	return managed
 }
 
-// undeployMCPResource 撤销某 MCP 资源在指定目标的部署（删其写入的所有 key + 清 DB）
-func (s *DeployService) undeployMCPResource(resourceID, deploymentID, targetPath string) {
-	// 读取该资源的 MCP 配置，获取其写入的所有顶层 key
+// undeployConfigResource 撤销某 Config 资源在指定目标的部署（删其写入的所有 key + 清 DB）
+func (s *DeployService) undeployConfigResource(resourceID, deploymentID, targetPath string) {
 	r, err := s.resourceRepo.GetResourceByID(resourceID)
-	if err != nil || r == nil {
-		// 资源已不存在，只清 DB
-		s.UndeployResourceFromTarget(resourceID, deploymentID, targetPath, "merge")
-		return
+	cfg := map[string]interface{}{}
+	if err == nil && r != nil {
+		cfg, _, _ = s.readConfigFragment(r)
 	}
 
-	mcpFile := filepath.Join(s.baseDir, "mcps", r.ID+".jsonc")
-	data, err := os.ReadFile(mcpFile)
-	if err != nil {
-		s.UndeployResourceFromTarget(resourceID, deploymentID, targetPath, "merge")
-		return
-	}
-	jsonData, _ := util.ParseJSONC(data)
-	var mcpConfig map[string]interface{}
-	if json.Unmarshal(jsonData, &mcpConfig) != nil {
-		s.UndeployResourceFromTarget(resourceID, deploymentID, targetPath, "merge")
-		return
-	}
-
-	// 从目标文件中移除该 MCP 的所有顶层 key
 	if util.FileExists(targetPath) {
-		tData, err := os.ReadFile(targetPath)
-		if err == nil {
-			stdJSON, pErr := util.ParseJSONC(tData)
-			if pErr != nil {
-				stdJSON = tData
-			}
-			var targetObj map[string]interface{}
-			if json.Unmarshal(stdJSON, &targetObj) == nil {
-				for k := range mcpConfig {
-					delete(targetObj, k)
-					// 也从 mcpServers 下删
-					if servers, ok := targetObj["mcpServers"].(map[string]interface{}); ok {
-						delete(servers, k)
-					}
-				}
-				// mcpServers 下的子 key 也要删
-				if servers, ok := mcpConfig["mcpServers"].(map[string]interface{}); ok {
-					if tServers, ok2 := targetObj["mcpServers"].(map[string]interface{}); ok2 {
-						for k := range servers {
-							delete(tServers, k)
-						}
-					}
-				}
-				output, _ := json.MarshalIndent(targetObj, "", "  ")
-				os.WriteFile(targetPath, output, 0644)
-			}
+		if err := s.removeConfigKeysFromTarget(targetPath, cfg); err != nil {
+			// 忽略具体写盘错误,仍清 DB
 		}
 	}
-
-	// 清 DB 记录
 	s.UndeployResourceFromTarget(resourceID, deploymentID, targetPath, "merge")
 }
 
-// removeMCPKey 从目标 .json 文件中移除指定 key（顶层优先，其次 mcpServers 下）
-// targetPath 是 MCP 部署的目标 .json 文件本身
-func (s *DeployService) removeMCPKey(targetPath, key string) {
-	if !util.FileExists(targetPath) {
-		return
+// removeConfigKeysFromTarget 从目标文件中移除 cfg 包含的所有顶层 key + 一层子 key
+// 自动按目标格式分派(JSON/YAML AST patch / TOML 整体重写)
+func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[string]interface{}) error {
+	format := util.DetectConfigFormat(targetPath)
+	if format == "" {
+		return fmt.Errorf("未知的目标文件格式: %s", targetPath)
 	}
-
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
-		return
+		return err
+	}
+	keysToRemove := flatKeys(cfg)
+	if len(keysToRemove) == 0 {
+		return nil
 	}
 
-	stdJSON, parseErr := util.ParseJSONC(data)
-	if parseErr != nil {
-		stdJSON = data
-	}
-
-	var settings map[string]interface{}
-	if err := json.Unmarshal(stdJSON, &settings); err != nil {
-		return
-	}
-
-	removed := false
-	// 先尝试从顶层删除
-	if _, exists := settings[key]; exists {
-		delete(settings, key)
-		removed = true
-	}
-	// 再尝试从 mcpServers 下删除
-	if mcpServers, ok := settings["mcpServers"].(map[string]interface{}); ok {
-		if _, exists := mcpServers[key]; exists {
-			delete(mcpServers, key)
-			settings["mcpServers"] = mcpServers
-			removed = true
+	switch format {
+	case util.FormatJSON:
+		std, pErr := util.ParseJSONC(data)
+		if pErr != nil {
+			std = data
 		}
+		var obj map[string]interface{}
+		if err := json.Unmarshal(std, &obj); err != nil {
+			return err
+		}
+		deleteNestedKeys(obj, keysToRemove)
+		out, err := json.MarshalIndent(obj, "", "  ")
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, out, 0644)
+	case util.FormatYAML:
+		var root yamlv3.Node
+		if err := yamlv3.Unmarshal(data, &root); err != nil {
+			return err
+		}
+		rootMap := util.PickRootMapping(&root)
+		if rootMap != nil {
+			deleteNestedKeysFromYAML(rootMap, keysToRemove)
+		}
+		var buf bytes.Buffer
+		enc := yamlv3.NewEncoder(&buf)
+		enc.SetIndent(2)
+		if err := enc.Encode(&root); err != nil {
+			return err
+		}
+		_ = enc.Close()
+		return os.WriteFile(targetPath, buf.Bytes(), 0644)
+	case util.FormatTOML:
+		var obj map[string]interface{}
+		if err := toml.Unmarshal(data, &obj); err != nil {
+			return err
+		}
+		deleteNestedKeys(obj, keysToRemove)
+		out, err := toml.Marshal(obj)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(targetPath, out, 0644)
 	}
-
-	if !removed {
-		return
-	}
-
-	output, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		return
-	}
-	os.WriteFile(targetPath, output, 0644)
+	return nil
 }
 
-// removeMCPResourceKeys 根据资源 ID 读取其 MCP 配置，从目标文件中移除该资源写入的所有 key
-func (s *DeployService) removeMCPResourceKeys(targetPath, resourceID string) {
-	// 获取该 MCP 资源的所有 key
-	allKeys := s.getMCPResourceKeys(resourceID)
-	if len(allKeys) == 0 {
+// deleteNestedKeys 从 obj 中删除 keysToRemove 中的 key(顶层 + 一层子键)
+// 顶层命中直接删除;否则尝试从 mcpServers 等子映射中删除(兼容历史 MCP 数据)
+func deleteNestedKeys(obj map[string]interface{}, keysToRemove map[string]bool) {
+	if obj == nil {
 		return
+	}
+	for k := range keysToRemove {
+		if _, ok := obj[k]; ok {
+			delete(obj, k)
+			continue
+		}
+		// 兼容历史:从所有子映射中删除
+		for _, v := range obj {
+			if sub, ok := v.(map[string]interface{}); ok {
+				delete(sub, k)
+			}
+		}
+	}
+}
+
+// deleteNestedKeysFromYAML 从 YAML mapping 节点中删除 key(顶层 + 一层子键)
+func deleteNestedKeysFromYAML(m *yamlv3.Node, keysToRemove map[string]bool) {
+	if m.Kind != yamlv3.MappingNode {
+		return
+	}
+	// 先收集要删除的 key 在 Content 中的下标(从大到小删除,避免下标位移)
+	type kv struct{ keyIdx, valIdx int }
+	var toDelete []kv
+	for i := 0; i < len(m.Content); i += 2 {
+		k := m.Content[i].Value
+		if keysToRemove[k] {
+			toDelete = append([]kv{{i, i + 1}}, toDelete...) // 倒序
+		}
+	}
+	for _, d := range toDelete {
+		m.Content = append(m.Content[:d.keyIdx], m.Content[d.valIdx+1:]...)
+	}
+	// 兼容历史:扫一遍剩余的子 mapping
+	for i := 0; i < len(m.Content); i += 2 {
+		val := m.Content[i+1]
+		if val.Kind != yamlv3.MappingNode {
+			continue
+		}
+		// 子键删除同样倒序
+		var delIdx []int
+		for j := 0; j < len(val.Content); j += 2 {
+			if keysToRemove[val.Content[j].Value] {
+				delIdx = append([]int{j}, delIdx...)
+			}
+		}
+		for _, j := range delIdx {
+			val.Content = append(val.Content[:j], val.Content[j+2:]...)
+		}
+	}
+}
+
+// removeConfigResourceKeys 根据资源 ID 读取其 Config 片段，从目标文件中移除该资源写入的所有 key
+// (兼容旧 API 调用; 复用 removeConfigKeysFromTarget)
+func (s *DeployService) removeConfigResourceKeys(targetPath, resourceID string) {
+	r, err := s.resourceRepo.GetResourceByID(resourceID)
+	cfg := map[string]interface{}{}
+	if err == nil && r != nil {
+		cfg, _, _ = s.readConfigFragment(r)
 	}
 	if !util.FileExists(targetPath) {
 		return
 	}
-
-	data, err := os.ReadFile(targetPath)
-	if err != nil {
-		return
-	}
-	stdJSON, parseErr := util.ParseJSONC(data)
-	if parseErr != nil {
-		stdJSON = data
-	}
-	var obj map[string]interface{}
-	if json.Unmarshal(stdJSON, &obj) != nil {
-		return
-	}
-
-	// 读资源配置原文拿到精确结构
-	r, rErr := s.resourceRepo.GetResourceByID(resourceID)
-	if rErr != nil || r == nil {
-		// 资源已删，用 allKeys fallback
-		for k := range allKeys {
-			delete(obj, k)
-			if servers, ok := obj["mcpServers"].(map[string]interface{}); ok {
-				delete(servers, k)
-			}
-		}
-	} else {
-		mcpFile := filepath.Join(s.baseDir, "mcps", r.ID+".jsonc")
-		cfgData, err := os.ReadFile(mcpFile)
-		if err == nil {
-			jsonData, _ := util.ParseJSONC(cfgData)
-			var cfg map[string]interface{}
-			if json.Unmarshal(jsonData, &cfg) == nil {
-				// 删除该 MCP 写入的所有顶层 key
-				for k := range cfg {
-					delete(obj, k)
-				}
-				// 若 MCP 有 mcpServers，从目标的 mcpServers 中也删
-				if servers, ok := cfg["mcpServers"].(map[string]interface{}); ok {
-					if tServers, ok2 := obj["mcpServers"].(map[string]interface{}); ok2 {
-						for k := range servers {
-							delete(tServers, k)
-						}
-					}
-				}
-			}
-		}
-	}
-
-	output, err := json.MarshalIndent(obj, "", "  ")
-	if err != nil {
-		return
-	}
-	os.WriteFile(targetPath, output, 0644)
+	_ = s.removeConfigKeysFromTarget(targetPath, cfg)
 }
 
 // checkItemHealth 检查单个部署明细的健康状态
 func (s *DeployService) checkItemHealth(deployment *model.Deployment, item *model.DeploymentItem) string {
 	if deployment.DeployType == "merge" {
-		// MCP: targetPath 即目标 .json 文件，检查文件中是否仍含 link_path 对应的 key
+		// Config 合并部署: targetPath 是配置文件,检查 link_path 对应的 key 是否仍在
+		format := util.DetectConfigFormat(deployment.TargetPath)
+		if format == "" {
+			return "broken"
+		}
 		data, err := os.ReadFile(deployment.TargetPath)
 		if err != nil {
 			return "broken"
 		}
-		stdJSON, parseErr := util.ParseJSONC(data)
-		if parseErr != nil {
-			stdJSON = data
-		}
-		var settings map[string]interface{}
-		if err := json.Unmarshal(stdJSON, &settings); err != nil {
+		settings, err := util.ParseConfigBytes(data, format)
+		if err != nil || settings == nil {
 			return "broken"
 		}
-		// 在顶层和 mcpServers 下查找该 key
 		if _, exists := settings[item.LinkPath]; exists {
 			return "ok"
 		}
-		if mcpServers, ok := settings["mcpServers"].(map[string]interface{}); ok {
-			if _, exists := mcpServers[item.LinkPath]; exists {
-				return "ok"
+		// 兼容历史:扫所有子映射
+		for _, v := range settings {
+			if sub, ok := v.(map[string]interface{}); ok {
+				if _, exists := sub[item.LinkPath]; exists {
+					return "ok"
+				}
 			}
 		}
 		return "broken"
@@ -1361,8 +1317,10 @@ func (s *DeployService) RestoreFromMeta(targetPath, aliasID string) {
 	}
 }
 
-// CheckConflicts MCP 批量部署预检冲突（不写入任何文件）
-// 检测：1. 待部署资源之间的 key 冲突  2. 与目标文件已有内容（原始+已部署MCP）的冲突
+// CheckConflicts Config 批量部署预检冲突（不写入任何文件）
+// 检测：1. 待部署资源之间的 key 冲突  2. 与目标文件已有内容（原始+已部署Config）的冲突
+// 返回 has_conflict 仅在存在真正需要用户决策的冲突时为 true
+// (ignored=被牺牲的资源, existing=与已有内容的冲突)；纯 applied 项不算冲突
 func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.CheckConflictsResp, error) {
 	// 解析目标路径
 	targetPath := req.TargetPath
@@ -1378,16 +1336,15 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		targetPath = filepath.Clean(expanded)
 	}
 
-	// 读目标文件当前内容
+	// 读目标文件当前内容,按目标后缀分派解析器(JSON/YAML/TOML)
 	var targetJSON map[string]interface{}
 	if util.FileExists(targetPath) {
 		data, _ := os.ReadFile(targetPath)
 		if len(data) > 0 {
-			stdJSON, pErr := util.ParseJSONC(data)
-			if pErr != nil {
-				stdJSON = data
+			format := util.DetectConfigFormat(targetPath)
+			if format != "" {
+				targetJSON, _ = util.ParseConfigBytes(data, format)
 			}
-			json.Unmarshal(stdJSON, &targetJSON)
 		}
 	}
 	if targetJSON == nil {
@@ -1406,7 +1363,7 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		if err != nil || r == nil {
 			continue
 		}
-		keys := s.getMCPResourceKeys(rid)
+		keys := s.getConfigResourceKeys(rid)
 		pending = append(pending, resKeys{id: rid, name: r.Name, keys: keys})
 	}
 
@@ -1505,7 +1462,7 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 			allNewKeys[k] = true
 		}
 	}
-	existingConflicts := s.findMCPConflicts(targetPath, "", allNewKeys)
+	existingConflicts := s.findConfigConflicts(targetPath, "", allNewKeys)
 	for _, ec := range existingConflicts {
 		isSelf := false
 		for _, p := range pending {
@@ -1535,9 +1492,22 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 	}
 
 	return &model.CheckConflictsResp{
-		HasConflict: len(conflicts) > 0,
+		HasConflict: hasRealConflict(conflicts),
 		Conflicts:   conflicts,
 	}, nil
+}
+
+// hasRealConflict 判断 conflicts 是否包含真正需要用户决策的冲突项
+// - ignored: 用户部署的多份资源有 key 重叠,被牺牲的那份
+// - existing: 与目标文件已有内容或已部署 Config 资源冲突
+// - applied:  "本次实际应用" 的展示项,不算冲突(单资源部署时永远会有一项)
+func hasRealConflict(items []model.ConflictItem) bool {
+	for _, c := range items {
+		if c.Status == "ignored" || c.Status == "existing" {
+			return true
+		}
+	}
+	return false
 }
 
 // GetResourceDeployTargets 获取某资源已部署到的所有目标路径（MCP 保存后同步用）
@@ -1566,7 +1536,7 @@ func (s *DeployService) GetResourceDeployTargets(resourceID string) ([]model.Res
 		// 检测冲突
 		hasConflict := false
 		if dep.DeployType == "merge" && item.LinkPath != "" {
-			hasConflict = s.checkMCPKeyConflict(dep.TargetPath, item.LinkPath, resourceID)
+			hasConflict = s.checkConfigKeyConflict(dep.TargetPath, item.LinkPath, resourceID)
 		}
 
 		// 查别名名称
@@ -1592,30 +1562,33 @@ func (s *DeployService) GetResourceDeployTargets(resourceID string) ([]model.Res
 	return result, nil
 }
 
-// checkMCPKeyConflict 检查目标 json 文件中是否已存在该 key（判定为冲突）
-func (s *DeployService) checkMCPKeyConflict(targetPath, key, _ string) bool {
+// checkConfigKeyConflict 检查目标文件中是否已存在该 key（顶层优先，其次扫描所有子映射）
+// 通用配置语义: key 可以是顶层 key,也可以是某子映射(如 mcpServers)下的 key
+func (s *DeployService) checkConfigKeyConflict(targetPath, key, _ string) bool {
 	if !util.FileExists(targetPath) {
+		return false
+	}
+	format := util.DetectConfigFormat(targetPath)
+	if format == "" {
 		return false
 	}
 	data, err := os.ReadFile(targetPath)
 	if err != nil {
 		return false
 	}
-	stdJSON, parseErr := util.ParseJSONC(data)
-	if parseErr != nil {
-		stdJSON = data
-	}
-	var obj map[string]interface{}
-	if json.Unmarshal(stdJSON, &obj) != nil {
+	obj, err := util.ParseConfigBytes(data, format)
+	if err != nil || obj == nil {
 		return false
 	}
-	// 顶层或 mcpServers 下存在该 key
 	if _, exists := obj[key]; exists {
 		return true
 	}
-	if servers, ok := obj["mcpServers"].(map[string]interface{}); ok {
-		if _, exists := servers[key]; exists {
-			return true
+	// 兼容历史 mcpServers 写法:扫所有子映射
+	for _, v := range obj {
+		if sub, ok := v.(map[string]interface{}); ok {
+			if _, exists := sub[key]; exists {
+				return true
+			}
 		}
 	}
 	return false

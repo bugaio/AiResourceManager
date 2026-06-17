@@ -15,8 +15,13 @@ const aliasStore = useAliasStore()
 const deployStore = useDeployStore()
 const uiStore = useUiStore()
 
-// MCP 模块的别名路径必须指向 .json 文件
-const isMcp = computed(() => uiStore.currentType === 'mcp')
+// Config 模块的别名路径必须是支持的配置文件格式
+const isConfig = computed(() => uiStore.currentType === 'config')
+const CONFIG_SUFFIXES = ['.json', '.jsonc', '.yaml', '.yml', '.toml']
+function isConfigFilePath(p: string): boolean {
+  const lower = p.toLowerCase()
+  return CONFIG_SUFFIXES.some(ext => lower.endsWith(ext))
+}
 
 // 搜索关键词
 const searchInput = ref('')
@@ -75,9 +80,9 @@ async function handleSubmit() {
 
   submitting.value = true
   try {
-    // MCP 别名路径必须是 .json 文件
-    if (isMcp.value && !form.path.trim().toLowerCase().endsWith('.json')) {
-      ElMessage.warning('MCP 的路径必须指向 .json 文件')
+    // Config 别名路径必须是支持的配置文件格式
+    if (isConfig.value && !isConfigFilePath(form.path.trim())) {
+      ElMessage.warning('Config 别名路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml')
       submitting.value = false
       return
     }
@@ -204,7 +209,7 @@ onMounted(() => {
           <el-input v-model="form.name" placeholder="输入别名名称" maxlength="50" />
         </el-form-item>
         <el-form-item label="路径" prop="path">
-          <el-input v-model="form.path" :placeholder="isMcp ? '指向 .json 文件，如 ~/Library/.../claude_desktop_config.json' : '支持 ~ 表示主目录'" maxlength="500" />
+          <el-input v-model="form.path" :placeholder="isConfig ? '指向配置文件(.json/.jsonc/.yaml/.yml/.toml)' : '支持 ~ 表示主目录'" maxlength="500" />
         </el-form-item>
       </el-form>
       <template #footer>

@@ -49,7 +49,7 @@ export function openFolder(path: string): Promise<void> {
   return request.post('/deployments/open-folder', { path })
 }
 
-/** 资源已部署到的目标路径（MCP 保存后同步用） */
+/** 资源已部署到的目标路径（Config 保存后同步用） */
 export interface ResourceDeployTarget {
   deployment_id: string
   target_path: string
@@ -60,7 +60,7 @@ export function getResourceDeployTargets(resourceId: string): Promise<ResourceDe
   return request.get(`/deployments/by-resource/${resourceId}`)
 }
 
-/** 预检 MCP 部署冲突（不写入文件） */
+/** 预检 Config 部署冲突（不写入文件） */
 export interface ConflictItem {
   resource_id?: string
   resource_name: string

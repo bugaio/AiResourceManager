@@ -7,7 +7,7 @@ import "time"
 type PathAlias struct {
 	ID        string    `json:"id"`         // UUID 主键
 	Name      string    `json:"name"`       // 别名名称
-	Type      string    `json:"type"`       // 资源类型 skill/agent/mcp，别名按类型隔离
+	Type      string    `json:"type"`       // 资源类型 skill/agent/config，别名按类型隔离
 	Path      string    `json:"path"`       // 目标路径
 	CreatedAt time.Time `json:"created_at"` // 创建时间
 }
@@ -15,7 +15,7 @@ type PathAlias struct {
 // CreateAliasReq 创建路径别名请求
 type CreateAliasReq struct {
 	Name string `json:"name" binding:"required"` // 别名名称
-	Type string `json:"type" binding:"required"` // 资源类型 skill/agent/mcp
+	Type string `json:"type" binding:"required"` // 资源类型 skill/agent/config
 	Path string `json:"path" binding:"required"` // 目标路径
 }
 

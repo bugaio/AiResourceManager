@@ -13,7 +13,7 @@ const emit = defineEmits<{
 const subtitle = computed(() => {
   const map: Record<string, string> = {
     skill: '还没有创建任何 Skill 资源',
-    mcp: '还没有创建任何 MCP 资源',
+    config: '还没有创建任何 Config 资源',
     agent: '还没有创建任何 Agent 资源',
   }
   return map[uiStore.currentType] || '还没有创建任何资源'

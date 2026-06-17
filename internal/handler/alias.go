@@ -36,7 +36,7 @@ func RegisterAliasRoutes(group *gin.RouterGroup, h *AliasHandler) {
 }
 
 // handleList 处理路径别名列表查询
-// 查询参数: type（可选，按资源类型 skill/agent/mcp 过滤）
+// 查询参数: type（可选，按资源类型 skill/agent/config 过滤）
 func (h *AliasHandler) handleList(c *gin.Context) {
 	aliasType := c.Query("type")
 	list, err := h.svc.ListAliases(aliasType)

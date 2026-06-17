@@ -7,7 +7,7 @@ import "time"
 type Group struct {
 	ID            string    `json:"id"`             // UUID 主键
 	Name          string    `json:"name"`           // 分组名称
-	Type          string    `json:"type"`           // 分组类型: skill/agent/mcp
+	Type          string    `json:"type"`           // 分组类型: skill/agent/config
 	Color         string    `json:"color"`          // 分组颜色（hex）
 	SortOrder     int       `json:"sort_order"`     // 排序权重
 	ResourceCount int       `json:"resource_count"` // 分组内资源数量（运行时填充）
@@ -18,7 +18,7 @@ type Group struct {
 // CreateGroupReq 创建分组请求
 type CreateGroupReq struct {
 	Name string `json:"name" binding:"required"` // 分组名称
-	Type string `json:"type" binding:"required"` // 分组类型: skill/agent/mcp
+	Type string `json:"type" binding:"required"` // 分组类型: skill/agent/config
 }
 
 // UpdateGroupReq 更新分组请求

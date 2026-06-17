@@ -7,7 +7,7 @@ import "time"
 type Resource struct {
 	ID          string    `json:"id"`          // UUID 主键
 	Name        string    `json:"name"`        // 资源名称
-	Type        string    `json:"type"`        // 资源类型: skill/agent/mcp
+	Type        string    `json:"type"`        // 资源类型: skill/agent/config
 	Path        string    `json:"path"`        // 文件系统路径
 	Description string    `json:"description"` // 资源描述
 	Metadata    string    `json:"metadata"`    // 扩展元数据 JSON
@@ -17,7 +17,7 @@ type Resource struct {
 
 // CreateResourceReq 创建资源请求
 type CreateResourceReq struct {
-	Type        string `json:"type" binding:"required"`        // 资源类型: skill/agent/mcp
+	Type        string `json:"type" binding:"required"`        // 资源类型: skill/agent/config
 	Name        string `json:"name" binding:"required"`        // 资源名称
 	Description string `json:"description"`                    // 资源描述（可选）
 	GroupID     string `json:"group_id"`                       // 所属分组 ID（可选）

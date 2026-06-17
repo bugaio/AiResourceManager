@@ -48,7 +48,7 @@ func (s *ResourceService) SetWatcherService(w *WatcherService) {
 func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.Resource, error) {
 	// 校验类型
 	if !isValidType(req.Type) {
-		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/mcp")
+		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/config")
 	}
 	// 校验名称
 	if strings.TrimSpace(req.Name) == "" {
@@ -467,7 +467,7 @@ func (s *ResourceService) getContentPath(resourceType, basePath string) string {
 		// skill 的 path 是目录，内容文件为 SKILL.md
 		return filepath.Join(basePath, "SKILL.md")
 	default:
-		// agent 和 mcp 的 path 就是文件本身
+		// agent 和 config 的 path 就是文件本身
 		return basePath
 	}
 }
@@ -484,8 +484,8 @@ func (s *ResourceService) createFiles(resourceType, name, uuid, description stri
 		return s.createSkillFiles(name, uuid, description)
 	case "agent":
 		return s.createAgentFile(name, uuid)
-	case "mcp":
-		return s.createMCPFile(name, uuid)
+	case "config":
+		return s.createConfigFile(name, uuid)
 	default:
 		return "", fmt.Errorf("不支持的资源类型: %s", resourceType)
 	}
@@ -541,32 +541,27 @@ func (s *ResourceService) createAgentFile(name, uuid string) (string, error) {
 	return filePath, nil
 }
 
-// createMCPFile 创建 mcp 类型的文件: {baseDir}/mcps/{uuid}.jsonc
-// 参数 name: MCP Server 名称
+// createConfigFile 创建 config 类型的文件: {baseDir}/configs/{uuid}.jsonc
+// 参数 name: Config 资源名称
 // 参数 uuid: UUID
 // 返回: 文件路径、错误信息
-func (s *ResourceService) createMCPFile(name, uuid string) (string, error) {
-	dir := filepath.Join(s.baseDir, "mcps")
+// 默认后缀 .jsonc(JSONC 格式,允许注释). 后续编辑/导入时可改为 .yaml/.toml.
+func (s *ResourceService) createConfigFile(name, uuid string) (string, error) {
+	dir := filepath.Join(s.baseDir, "configs")
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("创建 mcps 目录失败: %w", err)
+		return "", fmt.Errorf("创建 configs 目录失败: %w", err)
 	}
 
 	filePath := filepath.Join(dir, uuid+".jsonc")
 	content := `{
-  // mcp 配置
-  // 示例
-  /*
-  "chrome-devtools": {
-    "command": "npx",
-    "args": ["-y", "chrome-devtools-mcp@latest", "--autoConnect"]
-  }
-  */
+  // config 配置片段
+  // 部署时将与目标文件深度合并,保留目标原有注释和格式
   "mcpServers": {}
 }
 `
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("写入 mcp 文件失败: %w", err)
+		return "", fmt.Errorf("写入 config 文件失败: %w", err)
 	}
 
 	return filePath, nil
@@ -585,7 +580,7 @@ func (s *ResourceService) deleteFiles(resourceType, path string) {
 		// skill path 是目录，整个删除
 		os.RemoveAll(path)
 	default:
-		// agent/mcp 是单文件
+		// agent/config 是单文件
 		os.Remove(path)
 	}
 }
@@ -594,7 +589,7 @@ func (s *ResourceService) deleteFiles(resourceType, path string) {
 // 参数 t: 类型字符串
 // 返回: 是否合法
 func isValidType(t string) bool {
-	return t == "skill" || t == "agent" || t == "mcp"
+	return t == "skill" || t == "agent" || t == "config"
 }
 
 // timeNow 获取当前时间的辅助函数（方便测试 mock）

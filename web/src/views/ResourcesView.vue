@@ -376,8 +376,8 @@ function handleBatchDeploy() {
         @batch-deploy="handleBatchDeploy"
       />
       <BatchBar
-        v-show="uiStore.currentType === 'mcp'"
-        type="mcp"
+        v-show="uiStore.currentType === 'config'"
+        type="config"
         @batch-deploy="handleBatchDeploy"
       />
       <BatchBar

@@ -2,8 +2,8 @@
 import { ref, watch, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import PathInput from '@/components/common/PathInput.vue'
-import McpConflictDialog from '@/components/deploy/McpConflictDialog.vue'
-import type { ConflictTarget } from '@/components/deploy/McpConflictDialog.vue'
+import McpConflictDialog from '@/components/deploy/ConfigConflictDialog.vue'
+import type { ConflictTarget } from '@/components/deploy/ConfigConflictDialog.vue'
 import { useDeployStore } from '@/stores/deploy'
 import { useAliasStore } from '@/stores/alias'
 import { useUiStore } from '@/stores/ui'
@@ -27,8 +27,13 @@ const deployStore = useDeployStore()
 const aliasStore = useAliasStore()
 const uiStore = useUiStore()
 
-// MCP 模块的目标路径必须是 .json 文件
-const isMcp = computed(() => uiStore.currentType === 'mcp')
+// Config 模块: 目标路径必须是支持的配置文件格式
+const isConfig = computed(() => uiStore.currentType === 'config')
+const CONFIG_SUFFIXES = ['.json', '.jsonc', '.yaml', '.yml', '.toml']
+function isConfigFilePath(p: string): boolean {
+  const lower = p.toLowerCase()
+  return CONFIG_SUFFIXES.some(ext => lower.endsWith(ext))
+}
 
 // 已选目标路径列表
 interface SelectedTarget {
@@ -54,7 +59,7 @@ const track = ref(false)
 const saveAsAlias = ref(false)
 const aliasName = ref('')
 
-// MCP 冲突弹窗
+// Config 冲突弹窗
 const conflictDialogVisible = ref(false)
 const conflictTargets = ref<ConflictTarget[]>([])
 // 暂存冲突路径对应的 deploy request（force 时重用）
@@ -91,9 +96,9 @@ function handleAddTarget() {
     return
   }
 
-  // MCP 目标路径必须是 .json 文件
-  if (isMcp.value && !path.toLowerCase().endsWith('.json')) {
-    ElMessage.warning('MCP 的目标路径必须是 .json 文件')
+  // Config 目标路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml
+  if (isConfig.value && !isConfigFilePath(path)) {
+    ElMessage.warning('Config 目标路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml')
     return
   }
 
@@ -137,8 +142,8 @@ async function handleConfirm() {
 
   const resourceIds = props.resources.map(r => r.id)
 
-  if (isMcp.value) {
-    // MCP 路径：先预检冲突（不写入文件），有冲突弹窗让用户确认
+  if (isConfig.value) {
+    // Config 路径：先预检冲突（不写入文件），有冲突弹窗让用户确认
     const conflicts: ConflictTarget[] = []
     const reqs = new Map<string, DeployRequest>()
 
@@ -181,7 +186,7 @@ async function handleConfirm() {
       conflictDialogVisible.value = true
     } else {
       // 无冲突 → 直接部署全部
-      await doMcpDeploy(reqs, false)
+      await doConfigDeploy(reqs, false)
     }
   } else {
     // skill/agent 路径
@@ -228,8 +233,8 @@ async function handleConfirm() {
   }
 }
 
-/** MCP 实际部署（冲突确认后 or 无冲突时调用） */
-async function doMcpDeploy(reqs: Map<string, DeployRequest>, force: boolean) {
+/** Config 实际部署（冲突确认后 or 无冲突时调用） */
+async function doConfigDeploy(reqs: Map<string, DeployRequest>, force: boolean) {
   let hasError = false
   for (const [, req] of reqs) {
     if (force) req.force = true
@@ -399,7 +404,7 @@ async function saveAlias() {
     </template>
   </el-dialog>
 
-  <!-- MCP 冲突弹窗 -->
+  <!-- Config 冲突弹窗 -->
   <McpConflictDialog
     v-model:visible="conflictDialogVisible"
     :targets="conflictTargets"

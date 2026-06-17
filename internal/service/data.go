@@ -67,8 +67,8 @@ func (s *DataService) Export(targetPath string) (*model.ExportResult, error) {
 	fileCount++
 	totalSize += n
 
-	// 复制资源目录: skills/, agents/, mcps/
-	for _, dir := range []string{"skills", "agents", "mcps"} {
+	// 复制资源目录: skills/, agents/, configs/
+	for _, dir := range []string{"skills", "agents", "configs"} {
 		srcDir := filepath.Join(s.baseDir, dir)
 		if !util.IsDir(srcDir) {
 			continue
@@ -341,13 +341,19 @@ func (s *DataService) copyResourceFiles(resourceType, uuid, sourcePath, original
 		}
 		return dstFile, nil
 
-	case "mcp":
-		// mcps/{uuid}.jsonc
-		srcFile := filepath.Join(sourcePath, "mcps", filepath.Base(originalPath))
+	case "config":
+		// configs/{uuid}.{ext},ext 沿用原文件名后缀(json/jsonc/yaml/yml/toml)
+		srcFile := filepath.Join(sourcePath, "configs", filepath.Base(originalPath))
 		if !util.FileExists(srcFile) {
-			srcFile = filepath.Join(sourcePath, "mcps", uuid+".jsonc")
+			// 兼容历史:原扩展名为 .jsonc
+			srcFile = filepath.Join(sourcePath, "configs", uuid+".jsonc")
 		}
-		dstFile := filepath.Join(s.baseDir, "mcps", uuid+".jsonc")
+		// 目标文件名:沿用源文件后缀,缺失时默认 .jsonc
+		ext := filepath.Ext(srcFile)
+		if ext == "" {
+			ext = ".jsonc"
+		}
+		dstFile := filepath.Join(s.baseDir, "configs", uuid+ext)
 		os.MkdirAll(filepath.Dir(dstFile), 0755)
 		if util.FileExists(srcFile) {
 			_, err := copyFile(srcFile, dstFile)
@@ -438,7 +444,7 @@ func copyDirRecursive(src, dst string) (int, int64, error) {
 // extractUUIDFromPath 从文件路径提取资源 UUID
 // skills/{uuid}/... → uuid
 // agents/{uuid}.md → uuid
-// mcps/{uuid}.jsonc → uuid
+// configs/{uuid}.{ext} → uuid
 func extractUUIDFromPath(path, baseDir string) string {
 	rel, err := filepath.Rel(baseDir, path)
 	if err != nil {
@@ -458,10 +464,13 @@ func extractUUIDFromPath(path, baseDir string) string {
 		// agents/{uuid}.md
 		name := parts[1]
 		return strings.TrimSuffix(name, ".md")
-	case "mcps":
-		// mcps/{uuid}.jsonc
+	case "configs":
+		// configs/{uuid}.{ext}, ext 可为 .jsonc/.json/.yaml/.yml/.toml
 		name := parts[1]
-		return strings.TrimSuffix(name, ".jsonc")
+		if ext := filepath.Ext(name); ext != "" {
+			return strings.TrimSuffix(name, ext)
+		}
+		return name
 	default:
 		return ""
 	}

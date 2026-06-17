@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { getResourceDeployTargets, deploy } from '@/api/deploy'
 import type { ResourceDeployTarget } from '@/api/deploy'
 
-/** MCP 保存后同步部署弹窗 */
+/** Config 保存后同步部署弹窗 */
 const props = defineProps<{
   visible: boolean
   resourceId: string
@@ -107,7 +107,7 @@ function handleClose() {
   >
     <div v-loading="loading" class="flex flex-col gap-3">
       <p class="text-sm text-gray-600 dark:text-gray-400">
-        以下路径已部署该 MCP 资源，勾选后将以最新内容重新部署：
+        以下路径已部署该 Config 资源，勾选后将以最新内容重新部署：
       </p>
 
       <!-- 路径列表（可滚动） -->

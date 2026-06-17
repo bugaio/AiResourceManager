@@ -61,7 +61,7 @@ func (r *AliasRepo) GetAliasByID(id string) (*model.PathAlias, error) {
 }
 
 // ListAliases 按资源类型查询路径别名列表
-// 参数 aliasType: 资源类型过滤（skill/agent/mcp）；为空则返回全部
+// 参数 aliasType: 资源类型过滤（skill/agent/config）；为空则返回全部
 // 返回: 别名列表、错误信息
 func (r *AliasRepo) ListAliases(aliasType string) ([]model.PathAlias, error) {
 	r.db.RLock()

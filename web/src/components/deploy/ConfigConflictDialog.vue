@@ -78,7 +78,7 @@ function getNonGroupItems(items: ConflictItemType[]): ConflictItemType[] {
 <template>
   <el-dialog
     :model-value="visible"
-    title="MCP 部署冲突"
+    title="Config 部署冲突"
     width="500px"
     @close="handleClose"
     :close-on-click-modal="false"
@@ -172,7 +172,7 @@ function getNonGroupItems(items: ConflictItemType[]): ConflictItemType[] {
 
     <!-- 底部提示 -->
     <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-      确认覆盖将移除选中目录下冲突 MCP 的部署，保留新 MCP 配置。
+      确认覆盖将移除选中目录下冲突 Config 的部署，保留新 Config 片段。
     </p>
 
     <template #footer>

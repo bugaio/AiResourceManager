@@ -10,8 +10,8 @@ const router = useRouter()
 /** 资源类型选项 */
 const typeOptions: { label: string; value: ResourceType }[] = [
   { label: 'Skill', value: 'skill' },
-  { label: 'MCP', value: 'mcp' },
   { label: 'SubAgent', value: 'agent' },
+  { label: 'Config', value: 'config' },
 ]
 
 /** 处理设置菜单命令 */

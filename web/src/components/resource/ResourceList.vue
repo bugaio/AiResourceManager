@@ -22,7 +22,7 @@ const isAllGroup = computed(() => resourceStore.currentGroupId === '0')
 /** 类型中文映射 */
 const typeLabel: Record<string, string> = {
   skill: 'Skill',
-  mcp: 'MCP',
+  config: 'Config',
   agent: 'Agent',
 }
 

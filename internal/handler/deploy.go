@@ -108,7 +108,7 @@ func (h *DeployHandler) handleUndeploy(c *gin.Context) {
 }
 
 // handleTargets 处理目标路径聚合查询
-// 查询参数: type（可选，按资源类型 skill/agent/mcp 过滤）
+// 查询参数: type（可选，按资源类型 skill/agent/config 过滤）
 func (h *DeployHandler) handleTargets(c *gin.Context) {
 	resourceType := c.Query("type")
 	targets, err := h.svc.GetTargets(resourceType)
@@ -234,7 +234,7 @@ func (h *DeployHandler) handleOpenFolder(c *gin.Context) {
 	Success(c, nil)
 }
 
-// handleResourceDeployTargets 获取某资源已部署到的所有目标路径（MCP 保存后同步用）
+// handleResourceDeployTargets 获取某资源已部署到的所有目标路径（Config 保存后同步用）
 // 路径参数: resourceId
 func (h *DeployHandler) handleResourceDeployTargets(c *gin.Context) {
 	resourceID := c.Param("resourceId")
@@ -246,7 +246,7 @@ func (h *DeployHandler) handleResourceDeployTargets(c *gin.Context) {
 	Success(c, targets)
 }
 
-// handleCheckConflicts MCP 批量部署预检冲突（不写入文件）
+// handleCheckConflicts Config 批量部署预检冲突（不写入文件）
 func (h *DeployHandler) handleCheckConflicts(c *gin.Context) {
 	var req model.CheckConflictsReq
 	if err := c.ShouldBindJSON(&req); err != nil {

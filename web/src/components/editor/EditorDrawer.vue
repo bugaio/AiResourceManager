@@ -35,8 +35,8 @@ const saving = ref(false)
 const syncDialogVisible = ref(false)
 // Monaco 编辑器组件引用（用于格式化）
 const monacoRef = ref<InstanceType<typeof MonacoEditor>>()
-// 是否为 MCP 类型（显示格式化按钮）
-const isMcp = computed(() => resource.value?.type === 'mcp')
+// 是否为 Config 类型
+const isConfig = computed(() => resource.value?.type === 'config')
 // 抽屉宽度（百分比）
 const drawerWidth = ref(70)
 // 是否正在拖拽
@@ -45,9 +45,14 @@ const dragging = ref(false)
 /** 是否有未保存变更 */
 const dirty = computed(() => content.value !== originalContent.value)
 
-/** Monaco语言：skill/agent→markdown，mcp→json（已配置允许注释） */
+/** Monaco语言: skill/agent→markdown; config→按文件后缀选 json/yaml/toml */
 const editorLanguage = computed(() => {
-  if (resource.value?.type === 'mcp') return 'json'
+  if (resource.value?.type === 'config') {
+    const path = (resource.value.path || '').toLowerCase()
+    if (path.endsWith('.yaml') || path.endsWith('.yml')) return 'yaml'
+    if (path.endsWith('.toml')) return 'toml'
+    return 'json' // .json / .jsonc / 其它都走 json(jsonc 也支持注释)
+  }
   return 'markdown'
 })
 
@@ -86,8 +91,8 @@ async function handleSave() {
     ElMessage.success('保存成功')
     emit('saved')
 
-    // MCP 类型：检查是否有已部署路径，有则询问同步
-    if (resource.value?.type === 'mcp') {
+    // Config 类型：检查是否有已部署路径，有则询问同步
+    if (resource.value?.type === 'config') {
       const targets = await getResourceDeployTargets(props.resourceId)
       if (targets.length === 0) {
         // 无关联部署，直接关闭
@@ -220,7 +225,7 @@ onUnmounted(() => {
               </div>
               <div class="flex items-center gap-2">
                 <el-button
-                  v-if="isMcp"
+                  v-if="isConfig"
                   size="small"
                   @click="handleFormat"
                 >
@@ -258,7 +263,7 @@ onUnmounted(() => {
     </Transition>
   </Teleport>
 
-  <!-- MCP 同步部署弹窗 -->
+  <!-- Config 同步部署弹窗 -->
   <SyncDeployDialog
     v-model:visible="syncDialogVisible"
     :resource-id="resourceId"

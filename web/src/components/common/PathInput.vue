@@ -21,19 +21,19 @@ const emit = defineEmits<{
 const aliasStore = useAliasStore()
 const uiStore = useUiStore()
 
-// MCP 模块提示输入 .json 文件路径
+// Config 模块: 手动输入的路径必须以 .json/.jsonc/.yaml/.yml/.toml 结尾
 const manualPlaceholder = computed(() =>
-  uiStore.currentType === 'mcp'
-    ? '输入 .json 文件路径，如 ~/Library/.../claude_desktop_config.json'
-    : '输入目标路径，如 /path/to/target'
+  uiStore.currentType === 'config'
+    ? '输入配置文件路径,如 ~/Library/.../config.json'
+    : '输入目标路径,如 /path/to/target'
 )
 
-// 模式：alias=选择别名, manual=手动输入
+// 模式:alias=选择别名, manual=手动输入
 const mode = ref<'alias' | 'manual'>('alias')
 // 本地值
 const localPath = ref(props.modelValue)
 
-/** 过滤后的别名列表（排除已选） */
+/** 过滤后的别名列表(排除已选) */
 const filteredAliases = computed(() => {
   const excludes = props.excludeAliasIds || []
   if (excludes.length === 0) return aliasStore.aliases
