@@ -88,9 +88,15 @@ type ResourceDeployTarget struct {
 }
 
 // CheckConflictsReq 预检冲突请求
+//
+// 字段语义:
+//   - target_path / alias_id: 单目标场景 (config 模块沿用)
+//   - target_paths:           多目标场景 (prompt 模块, 一次部署到多个 .md 文件)
+//     非空时优先生效, 与 target_path/alias_id 互斥
 type CheckConflictsReq struct {
 	ResourceIDs []string `json:"resource_ids" binding:"required"`
 	TargetPath  string   `json:"target_path"`
+	TargetPaths []string `json:"target_paths"`
 	AliasID     *string  `json:"alias_id"`
 }
 
@@ -98,6 +104,7 @@ type CheckConflictsReq struct {
 type ConflictItem struct {
 	ResourceID   string `json:"resource_id,omitempty"` // 资源 ID（待部署资源有，已有内容无）
 	ResourceName string `json:"resource_name"`         // 冲突方名称
+	TargetPath   string `json:"target_path,omitempty"` // 关联目标路径 (prompt 多目标场景)
 	Status       string `json:"status"`                // ignored=冲突被忽略(红), applied=实际应用(绿), existing=已有内容冲突
 	Group        int    `json:"group"`                 // 冲突组号（>0 表示属于同一冲突组，0=无冲突/已有内容）
 }

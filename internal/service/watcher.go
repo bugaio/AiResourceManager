@@ -1,5 +1,5 @@
 // Package service watcher.go 实现文件系统监听服务
-// 监听 ~/.aiManager/skills/、agents/、configs/ 目录变化
+// 监听 ~/.aiManager/skills/、agents/、configs/、prompts/ 目录变化
 // 通过 WebSocket Hub 推送事件到前端
 package service
 
@@ -94,6 +94,7 @@ func (w *WatcherService) Start() error {
 		filepath.Join(w.baseDir, "skills"),
 		filepath.Join(w.baseDir, "agents"),
 		filepath.Join(w.baseDir, "configs"),
+		filepath.Join(w.baseDir, "prompts"),
 	}
 
 	for _, dir := range watchDirs {

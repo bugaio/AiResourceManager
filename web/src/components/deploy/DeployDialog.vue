@@ -27,12 +27,17 @@ const deployStore = useDeployStore()
 const aliasStore = useAliasStore()
 const uiStore = useUiStore()
 
-// Config 模块: 目标路径必须是支持的配置文件格式
+// Config / Prompt 模块: 需要走冲突预检流程
 const isConfig = computed(() => uiStore.currentType === 'config')
+const isPrompt = computed(() => uiStore.currentType === 'prompt')
+const needsConflictCheck = computed(() => isConfig.value || isPrompt.value)
 const CONFIG_SUFFIXES = ['.json', '.jsonc', '.yaml', '.yml', '.toml']
 function isConfigFilePath(p: string): boolean {
   const lower = p.toLowerCase()
   return CONFIG_SUFFIXES.some(ext => lower.endsWith(ext))
+}
+function isPromptFilePath(p: string): boolean {
+  return /\.md$/i.test(p)
 }
 
 // 已选目标路径列表
@@ -101,6 +106,11 @@ function handleAddTarget() {
     ElMessage.warning('Config 目标路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml')
     return
   }
+  // Prompt 目标路径后缀必须是 .md
+  if (isPrompt.value && !isPromptFilePath(path)) {
+    ElMessage.warning('Prompt 目标路径后缀必须是 .md')
+    return
+  }
 
   const alias = currentAliasId.value
     ? aliasStore.aliases.find(a => a.id === currentAliasId.value)
@@ -142,8 +152,8 @@ async function handleConfirm() {
 
   const resourceIds = props.resources.map(r => r.id)
 
-  if (isConfig.value) {
-    // Config 路径：先预检冲突（不写入文件），有冲突弹窗让用户确认
+  if (needsConflictCheck.value) {
+    // Config / Prompt 路径：先预检冲突（不写入文件），有冲突弹窗让用户确认
     const conflicts: ConflictTarget[] = []
     const reqs = new Map<string, DeployRequest>()
 
@@ -186,7 +196,7 @@ async function handleConfirm() {
       conflictDialogVisible.value = true
     } else {
       // 无冲突 → 直接部署全部
-      await doConfigDeploy(reqs, false)
+      await doMergeDeploy(reqs, false)
     }
   } else {
     // skill/agent 路径
@@ -233,8 +243,8 @@ async function handleConfirm() {
   }
 }
 
-/** Config 实际部署（冲突确认后 or 无冲突时调用） */
-async function doConfigDeploy(reqs: Map<string, DeployRequest>, force: boolean) {
+/** Config / Prompt 实际部署（冲突确认后 or 无冲突时调用） */
+async function doMergeDeploy(reqs: Map<string, DeployRequest>, force: boolean) {
   let hasError = false
   for (const [, req] of reqs) {
     if (force) req.force = true
@@ -261,12 +271,14 @@ async function handleConflictConfirm(selectedPaths: string[]) {
     const conflictTarget = conflictTargets.value.find(c => c.path === target.path)
 
     if (conflictTarget && selectedPaths.includes(target.path)) {
-      // 有冲突且用户选中了覆盖：只部署 applied 的资源
-      const appliedIds = conflictTarget.conflicts
-        .filter(c => c.status === 'applied' && c.id)
+      // 有冲突且用户选中了覆盖：部署 applied + existing 的资源（均带 force）
+      // - applied: 本次部署实际生效的资源
+      // - existing: 目标已有同名资源（如 prompt 已部署过），需 force 覆盖更新
+      const deployIds = conflictTarget.conflicts
+        .filter(c => (c.status === 'applied' || c.status === 'existing') && c.id)
         .map(c => c.id!)
-      if (appliedIds.length > 0) {
-        req.resource_ids = appliedIds
+      if (deployIds.length > 0) {
+        req.resource_ids = deployIds
         req.force = true
         try {
           await deployStore.deploy(req)

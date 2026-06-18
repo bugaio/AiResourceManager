@@ -108,7 +108,7 @@ func (h *DeployHandler) handleUndeploy(c *gin.Context) {
 }
 
 // handleTargets 处理目标路径聚合查询
-// 查询参数: type（可选，按资源类型 skill/agent/config 过滤）
+// 查询参数: type（可选，按资源类型 skill/agent/config/prompt 过滤）
 func (h *DeployHandler) handleTargets(c *gin.Context) {
 	resourceType := c.Query("type")
 	targets, err := h.svc.GetTargets(resourceType)

@@ -36,7 +36,7 @@ func (s *AliasService) CreateAlias(req *model.CreateAliasReq) (*model.PathAlias,
 	}
 	// 校验类型
 	if !isValidType(req.Type) {
-		return nil, model.NewBizError(model.ErrAliasInvalid, "type 必须为 skill/agent/config")
+		return nil, model.NewBizError(model.ErrAliasInvalid, "type 必须为 skill/agent/config/prompt")
 	}
 	// 校验路径
 	if strings.TrimSpace(req.Path) == "" {
@@ -46,6 +46,11 @@ func (s *AliasService) CreateAlias(req *model.CreateAliasReq) (*model.PathAlias,
 	if req.Type == "config" && !util.IsConfigFile(req.Path) {
 		return nil, model.NewBizError(model.ErrAliasInvalid,
 			"Config 别名路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml")
+	}
+	// prompt 类型的别名 path 必须指向 .md 文件
+	if req.Type == "prompt" && !util.IsPromptFile(req.Path) {
+		return nil, model.NewBizError(model.ErrAliasInvalid,
+			"Prompt 别名路径后缀必须是 .md")
 	}
 
 	// 检查同类型内名称唯一性
@@ -105,6 +110,11 @@ func (s *AliasService) UpdateAlias(id string, req *model.UpdateAliasReq) error {
 	if existing.Type == "config" && !util.IsConfigFile(req.Path) {
 		return model.NewBizError(model.ErrAliasInvalid,
 			"Config 别名路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml")
+	}
+	// prompt 类型的别名 path 后缀校验
+	if existing.Type == "prompt" && !util.IsPromptFile(req.Path) {
+		return model.NewBizError(model.ErrAliasInvalid,
+			"Prompt 别名路径后缀必须是 .md")
 	}
 
 	// 检查同类型内名称唯一性（排除自身）

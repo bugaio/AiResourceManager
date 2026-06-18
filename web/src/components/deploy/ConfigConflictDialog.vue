@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
+import { useUiStore } from '@/stores/ui'
 
 /** MCP 部署冲突弹窗 - 按目录分组显示冲突列表 */
 export interface ConflictTarget {
@@ -17,6 +18,30 @@ const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void
   (e: 'confirm', selectedPaths: string[]): void
 }>()
+
+const uiStore = useUiStore()
+
+/** 资源类型中文标签 */
+const resourceLabel = computed(() => {
+  switch (uiStore.currentType) {
+    case 'prompt': return 'Prompt'
+    case 'skill':  return 'Skill'
+    case 'agent':  return 'Agent'
+    case 'config': return 'Config'
+    default:       return 'Config'
+  }
+})
+
+/** 资源内容单位标签 */
+const resourceUnit = computed(() => {
+  switch (uiStore.currentType) {
+    case 'prompt': return '提示词内容'
+    case 'skill':  return 'Skill 内容'
+    case 'agent':  return 'Agent 内容'
+    case 'config': return '配置键'
+    default:       return '配置项'
+  }
+})
 
 // 选中的目标路径
 const selected = ref<Set<string>>(new Set())
@@ -78,7 +103,7 @@ function getNonGroupItems(items: ConflictItemType[]): ConflictItemType[] {
 <template>
   <el-dialog
     :model-value="visible"
-    title="Config 部署冲突"
+    :title="`${resourceLabel} 部署冲突`"
     width="500px"
     @close="handleClose"
     :close-on-click-modal="false"
@@ -95,7 +120,7 @@ function getNonGroupItems(items: ConflictItemType[]): ConflictItemType[] {
       </span>
       <span class="flex items-center gap-1">
         <span class="w-3 h-3 rounded bg-amber-100 dark:bg-amber-900/30 border border-amber-300"></span>
-        <span class="text-gray-500">已有内容冲突</span>
+        <span class="text-gray-500">已有{{ resourceUnit }}冲突</span>
       </span>
     </div>
 
@@ -172,7 +197,7 @@ function getNonGroupItems(items: ConflictItemType[]): ConflictItemType[] {
 
     <!-- 底部提示 -->
     <p class="mt-3 text-xs text-gray-500 dark:text-gray-400">
-      确认覆盖将移除选中目录下冲突 Config 的部署，保留新 Config 片段。
+      确认覆盖将移除选中目录下冲突 {{ resourceLabel }} 的部署，保留新 {{ resourceLabel }} 片段。
     </p>
 
     <template #footer>

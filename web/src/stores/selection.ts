@@ -3,12 +3,12 @@ import { ref, computed } from 'vue'
 import { useUiStore } from './ui'
 import type { ResourceType } from '@/types/resource'
 
-/** 选择状态管理 — 按 ResourceType 隔离三份独立选择集
+/** 选择状态管理 — 按 ResourceType 隔离独立选择集
  *
  * 设计原则:
- * - 三份 Set 完全独立(skill / agent / config),互不影响
+ * - 各 Set 完全独立(skill / agent / config / prompt),互不影响
  * - 默认所有读写以 ui.currentType 为目标,保持调用方零改动
- * - 提供 *ForType 系列方法,允许显式指定 type(给 3 个 BatchBar 用)
+ * - 提供 *ForType 系列方法,允许显式指定 type(给各 BatchBar 用)
  */
 export const useSelectionStore = defineStore('selection', () => {
   const ui = useUiStore()
@@ -17,6 +17,7 @@ export const useSelectionStore = defineStore('selection', () => {
     skill: new Set<string>(),
     agent: new Set<string>(),
     config: new Set<string>(),
+    prompt: new Set<string>(),
   })
 
   // ---- 当前 type 的便捷接口(给 ResourceCard / ResourcesView 全选 checkbox 用) ----

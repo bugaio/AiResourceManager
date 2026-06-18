@@ -50,7 +50,8 @@ const allItems = computed(() => {
 
 /** 当前类型对应的 deploy_type */
 const currentDeployType = computed(() => {
-  return uiStore.currentType === 'config' ? 'merge' : 'symlink'
+  // config / prompt 走 merge，skill / agent 走 symlink
+  return uiStore.currentType === 'config' || uiStore.currentType === 'prompt' ? 'merge' : 'symlink'
 })
 
 /** 当前类型下的部署记录 */
@@ -97,7 +98,13 @@ function handleEditMenu() {
 /** 清空当前类型的部署 */
 async function handleClear() {
   editMenuVisible.value = false
-  const typeName = uiStore.currentType === 'skill' ? 'Skill' : uiStore.currentType === 'config' ? 'Config' : 'SubAgent'
+  const typeNameMap: Record<string, string> = {
+    skill: 'Skill',
+    config: 'Config',
+    prompt: 'Prompt',
+    agent: 'SubAgent',
+  }
+  const typeName = typeNameMap[uiStore.currentType] || uiStore.currentType
   const deployments = currentTypeDeployments.value
   if (deployments.length === 0) {
     ElMessage.info(`该路径下没有 ${typeName} 类型的部署`)

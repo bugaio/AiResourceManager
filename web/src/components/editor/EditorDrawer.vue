@@ -45,7 +45,7 @@ const dragging = ref(false)
 /** 是否有未保存变更 */
 const dirty = computed(() => content.value !== originalContent.value)
 
-/** Monaco语言: skill/agent→markdown; config→按文件后缀选 json/yaml/toml */
+/** Monaco语言: skill/agent/prompt→markdown; config→按文件后缀选 json/yaml/toml */
 const editorLanguage = computed(() => {
   if (resource.value?.type === 'config') {
     const path = (resource.value.path || '').toLowerCase()
@@ -53,6 +53,7 @@ const editorLanguage = computed(() => {
     if (path.endsWith('.toml')) return 'toml'
     return 'json' // .json / .jsonc / 其它都走 json(jsonc 也支持注释)
   }
+  // skill / agent / prompt 全部按 markdown 渲染
   return 'markdown'
 })
 
@@ -91,8 +92,8 @@ async function handleSave() {
     ElMessage.success('保存成功')
     emit('saved')
 
-    // Config 类型：检查是否有已部署路径，有则询问同步
-    if (resource.value?.type === 'config') {
+    // Config / Prompt 类型：检查是否有已部署路径，有则询问同步
+    if (resource.value?.type === 'config' || resource.value?.type === 'prompt') {
       const targets = await getResourceDeployTargets(props.resourceId)
       if (targets.length === 0) {
         // 无关联部署，直接关闭

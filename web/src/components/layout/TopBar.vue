@@ -12,6 +12,7 @@ const typeOptions: { label: string; value: ResourceType }[] = [
   { label: 'Skill', value: 'skill' },
   { label: 'SubAgent', value: 'agent' },
   { label: 'Config', value: 'config' },
+  { label: 'Prompt', value: 'prompt' },
 ]
 
 /** 处理设置菜单命令 */

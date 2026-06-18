@@ -48,7 +48,7 @@ func (s *ResourceService) SetWatcherService(w *WatcherService) {
 func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.Resource, error) {
 	// 校验类型
 	if !isValidType(req.Type) {
-		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/config")
+		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/config/prompt")
 	}
 	// 校验名称
 	if strings.TrimSpace(req.Name) == "" {
@@ -486,6 +486,8 @@ func (s *ResourceService) createFiles(resourceType, name, uuid, description stri
 		return s.createAgentFile(name, uuid)
 	case "config":
 		return s.createConfigFile(name, uuid)
+	case "prompt":
+		return s.createPromptFile(name, uuid)
 	default:
 		return "", fmt.Errorf("不支持的资源类型: %s", resourceType)
 	}
@@ -567,6 +569,32 @@ func (s *ResourceService) createConfigFile(name, uuid string) (string, error) {
 	return filePath, nil
 }
 
+// createPromptFile 创建 prompt 类型的文件: {baseDir}/prompts/{uuid}.md
+// 参数 name: prompt 资源名称
+// 参数 uuid: UUID
+// 返回: 文件路径、错误信息
+// 模板内容由 PRD §2.4 给出,作为新建资源的初始编辑器内容
+func (s *ResourceService) createPromptFile(name, uuid string) (string, error) {
+	dir := filepath.Join(s.baseDir, "prompts")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return "", fmt.Errorf("创建 prompts 目录失败: %w", err)
+	}
+
+	filePath := filepath.Join(dir, uuid+".md")
+	content := `<!-- 在此编写提示词内容 -->
+
+## 用法
+
+> 描述这段提示词的使用场景与触发条件
+`
+
+	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
+		return "", fmt.Errorf("写入 prompt 文件失败: %w", err)
+	}
+
+	return filePath, nil
+}
+
 // deleteFiles 删除资源对应的文件系统文件
 // 参数 resourceType: 资源类型
 // 参数 path: 文件/目录路径
@@ -589,7 +617,7 @@ func (s *ResourceService) deleteFiles(resourceType, path string) {
 // 参数 t: 类型字符串
 // 返回: 是否合法
 func isValidType(t string) bool {
-	return t == "skill" || t == "agent" || t == "config"
+	return t == "skill" || t == "agent" || t == "config" || t == "prompt"
 }
 
 // timeNow 获取当前时间的辅助函数（方便测试 mock）

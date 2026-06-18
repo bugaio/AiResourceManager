@@ -17,10 +17,14 @@ const uiStore = useUiStore()
 
 // Config 模块的别名路径必须是支持的配置文件格式
 const isConfig = computed(() => uiStore.currentType === 'config')
+const isPrompt = computed(() => uiStore.currentType === 'prompt')
 const CONFIG_SUFFIXES = ['.json', '.jsonc', '.yaml', '.yml', '.toml']
 function isConfigFilePath(p: string): boolean {
   const lower = p.toLowerCase()
   return CONFIG_SUFFIXES.some(ext => lower.endsWith(ext))
+}
+function isPromptFilePath(p: string): boolean {
+  return /\.md$/i.test(p)
 }
 
 // 搜索关键词
@@ -83,6 +87,12 @@ async function handleSubmit() {
     // Config 别名路径必须是支持的配置文件格式
     if (isConfig.value && !isConfigFilePath(form.path.trim())) {
       ElMessage.warning('Config 别名路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml')
+      submitting.value = false
+      return
+    }
+    // Prompt 别名路径必须是 .md
+    if (isPrompt.value && !isPromptFilePath(form.path.trim())) {
+      ElMessage.warning('Prompt 别名路径后缀必须是 .md')
       submitting.value = false
       return
     }
@@ -209,7 +219,7 @@ onMounted(() => {
           <el-input v-model="form.name" placeholder="输入别名名称" maxlength="50" />
         </el-form-item>
         <el-form-item label="路径" prop="path">
-          <el-input v-model="form.path" :placeholder="isConfig ? '指向配置文件(.json/.jsonc/.yaml/.yml/.toml)' : '支持 ~ 表示主目录'" maxlength="500" />
+          <el-input v-model="form.path" :placeholder="isConfig ? '指向配置文件(.json/.jsonc/.yaml/.yml/.toml)' : isPrompt ? '指向 Markdown 文件(.md)' : '支持 ~ 表示主目录'" maxlength="500" />
         </el-form-item>
       </el-form>
       <template #footer>

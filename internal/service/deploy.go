@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/anthropic/airesourcemanager/internal/model"
@@ -73,9 +74,10 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 
 	// 3. 按资源类型处理目标路径
 	//    - config: 目标路径必须是一个已存在的配置文件（.json/.yaml/.yml/.toml）
+	//    - prompt: 目标路径必须是一个已存在的 .md 文件
 	//    - skill/agent: 目标路径是目录，不存在则创建
-	isConfig := resources[0].Type == "config"
-	if isConfig {
+	switch resources[0].Type {
+	case "config":
 		if !util.IsConfigFile(targetPath) {
 			return nil, model.NewBizError(model.ErrDeployInvalid,
 				fmt.Sprintf("Config 目标文件后缀必须是 .json/.yaml/.yml/.toml: %s", targetPath))
@@ -86,7 +88,18 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 		if util.IsDir(targetPath) {
 			return nil, model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("Config 目标路径必须是文件而非目录: %s", targetPath))
 		}
-	} else {
+	case "prompt":
+		if !util.IsPromptFile(targetPath) {
+			return nil, model.NewBizError(model.ErrDeployInvalid,
+				fmt.Sprintf("Prompt 目标文件后缀必须是 .md: %s", targetPath))
+		}
+		if !util.FileExists(targetPath) {
+			return nil, model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("目标文件不存在，请先创建: %s", targetPath))
+		}
+		if util.IsDir(targetPath) {
+			return nil, model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("Prompt 目标路径必须是文件而非目录: %s", targetPath))
+		}
+	default:
 		if err := util.EnsureDir(targetPath); err != nil {
 			return nil, model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("创建目标目录失败: %s, %v", targetPath, err))
 		}
@@ -114,6 +127,9 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 			deployType = "symlink"
 		case "config":
 			linkPath, err = s.deployConfig(&res, targetPath, req.Force)
+			deployType = "merge"
+		case "prompt":
+			linkPath, err = s.deployPrompt(&res, targetPath, req.Force)
 			deployType = "merge"
 		default:
 			err = model.NewBizError(model.ErrDeployInvalid, fmt.Sprintf("不支持的资源类型: %s", res.Type))
@@ -224,7 +240,7 @@ func (s *DeployService) Undeploy(deploymentID string) error {
 	// 逐项撤销
 	for _, item := range items {
 		if deployment.DeployType == "merge" {
-			s.removeConfigResourceKeys(deployment.TargetPath, item.ResourceID)
+			s.removeMergeResource(deployment.TargetPath, item.ResourceID)
 		} else {
 			if _, e := os.Lstat(item.LinkPath); e == nil {
 				os.Remove(item.LinkPath)
@@ -405,6 +421,8 @@ func (s *DeployService) RepairItem(deploymentID, itemID string) error {
 		_, err = s.deployAgent(resource, deployment.TargetPath, true)
 	case "config":
 		_, err = s.deployConfig(resource, deployment.TargetPath, true)
+	case "prompt":
+		_, err = s.deployPrompt(resource, deployment.TargetPath, true)
 	}
 
 	return err
@@ -427,7 +445,7 @@ func (s *DeployService) CleanItem(itemID string, undeploy bool) error {
 		dep, _ := s.deployRepo.GetDeploymentByID(item.DeploymentID)
 		if dep != nil {
 			if dep.DeployType == "merge" {
-				s.removeConfigResourceKeys(dep.TargetPath, item.ResourceID)
+				s.removeMergeResource(dep.TargetPath, item.ResourceID)
 			} else {
 				if _, e := os.Lstat(item.LinkPath); e == nil {
 					os.Remove(item.LinkPath)
@@ -483,6 +501,8 @@ func (s *DeployService) DeploySingleResourceToTarget(deploymentID string, resour
 		linkPath, err = s.deployAgent(resource, targetPath, true)
 	case "config":
 		linkPath, err = s.deployConfig(resource, targetPath, true)
+	case "prompt":
+		linkPath, err = s.deployPrompt(resource, targetPath, true)
 	default:
 		return nil
 	}
@@ -524,7 +544,7 @@ func (s *DeployService) UndeployResourceFromTarget(resourceID, deploymentID, tar
 			continue
 		}
 		if deployType == "merge" {
-			s.removeConfigResourceKeys(targetPath, item.ResourceID)
+			s.removeMergeResource(targetPath, item.ResourceID)
 		} else {
 			if _, e := os.Lstat(item.LinkPath); e == nil {
 				os.Remove(item.LinkPath)
@@ -751,6 +771,74 @@ func (s *DeployService) deployConfig(resource *model.Resource, targetPath string
 	}
 
 	return linkPath, nil
+}
+
+// deployPrompt 部署 prompt 类型资源 (追加资源全文到目标 .md 末尾,前后包裹分隔符标记)
+//
+// 流程:
+//  1. 读取资源源文件 (storage/prompts/{uuid}.md) 全文
+//  2. force=true 时,先 StripPromptBlock 删除目标中已有的同 UUID 块 (保证幂等)
+//  3. 拼接 BuildPromptBlock,以 append 模式写入目标 .md
+//  4. linkPath = targetPath (健康检查/撤销直接用 targetPath + uuid 定位)
+//
+// 注意:
+//   - force=false 且目标已含分隔符块时,正常应由前端 checkConflicts 提前拦截;
+//     这里若再遇到不会重复检测,直接追加(等同两次部署 → 两个块,健康检查仍 ok)。
+//     但 force 路径必须保证幂等: 连续 force N 次,文件中只存在一个分隔符块。
+func (s *DeployService) deployPrompt(resource *model.Resource, targetPath string, force bool) (string, error) {
+	// 校验目标文件
+	if !util.IsPromptFile(targetPath) {
+		return "", model.NewBizError(model.ErrDeployInvalid,
+			fmt.Sprintf("Prompt 目标文件后缀必须是 .md: %s", targetPath))
+	}
+	if !util.FileExists(targetPath) {
+		return "", model.NewBizError(model.ErrDeployFailed,
+			fmt.Sprintf("目标文件不存在,请先创建: %s", targetPath))
+	}
+	if util.IsDir(targetPath) {
+		return "", model.NewBizError(model.ErrDeployInvalid,
+			fmt.Sprintf("Prompt 目标路径必须是文件而非目录: %s", targetPath))
+	}
+
+	// 读资源源文件
+	if resource.Path == "" {
+		return "", model.NewBizError(model.ErrDeployFailed, "资源 path 为空")
+	}
+	srcBytes, err := os.ReadFile(resource.Path)
+	if err != nil {
+		return "", model.NewBizError(model.ErrDeployFailed,
+			fmt.Sprintf("读取 Prompt 资源文件失败: %v", err))
+	}
+
+	// 读目标当前内容
+	dstBytes, err := os.ReadFile(targetPath)
+	if err != nil {
+		return "", model.NewBizError(model.ErrDeployFailed,
+			fmt.Sprintf("读取 Prompt 目标文件失败: %v", err))
+	}
+	dstText := string(dstBytes)
+
+	// force 模式: 先删旧块,保证幂等
+	if force {
+		dstText = util.StripPromptBlock(dstText, resource.ID)
+	}
+
+	// 规范化目标末尾: 保证文件以 \n 结尾,后续追加块前的 \n 不会粘连
+	dstText = util.EnsureTrailingNewline(dstText)
+
+	// 拼追加块
+	block := util.BuildPromptBlock(resource.ID, string(srcBytes))
+	out := dstText + block
+
+	// 末尾仅保留一个 \n
+	out = strings.TrimRight(out, "\n") + "\n"
+
+	if err := os.WriteFile(targetPath, []byte(out), 0644); err != nil {
+		return "", model.NewBizError(model.ErrDeployFailed,
+			fmt.Sprintf("写入 Prompt 目标文件失败: %v", err))
+	}
+
+	return targetPath, nil
 }
 
 // flatKeys 把嵌套 map 的所有 key 拍平(顶层 + 一层子键,如 mcpServers 的子键)
@@ -1048,9 +1136,53 @@ func (s *DeployService) removeConfigResourceKeys(targetPath, resourceID string) 
 	_ = s.removeConfigKeysFromTarget(targetPath, cfg)
 }
 
+// removePromptResourceMarkers 根据资源 ID 从目标 .md 文件中删除其分隔符标记块
+// resourceID 即资源 UUID,直接作为分隔符锚点
+// 目标文件不存在时静默跳过(与 config 行为一致)
+func (s *DeployService) removePromptResourceMarkers(targetPath, resourceID string) {
+	if !util.FileExists(targetPath) {
+		return
+	}
+	data, err := os.ReadFile(targetPath)
+	if err != nil {
+		return
+	}
+	stripped := util.StripPromptBlock(string(data), resourceID)
+	_ = os.WriteFile(targetPath, []byte(stripped), 0644)
+}
+
+// removeMergeResource 按资源 Type 分流的 merge 撤销
+//   - config: 走 removeConfigResourceKeys (按 key 删除)
+//   - prompt: 走 removePromptResourceMarkers (按分隔符删除)
+//
+// 资源已不存在时(如先删了资源)无法判定 type,默认按 config 兜底
+// (历史数据多为 config; prompt 资源删除时已先级联撤销部署,不会走到此分支)
+func (s *DeployService) removeMergeResource(targetPath, resourceID string) {
+	r, _ := s.resourceRepo.GetResourceByID(resourceID)
+	if r != nil && r.Type == "prompt" {
+		s.removePromptResourceMarkers(targetPath, resourceID)
+		return
+	}
+	s.removeConfigResourceKeys(targetPath, resourceID)
+}
+
 // checkItemHealth 检查单个部署明细的健康状态
 func (s *DeployService) checkItemHealth(deployment *model.Deployment, item *model.DeploymentItem) string {
 	if deployment.DeployType == "merge" {
+		// 区分 prompt / config: prompt 按分隔符判定,config 按 key 判定
+		// 资源已不存在时无法判定,默认走 config 兼容路径
+		r, _ := s.resourceRepo.GetResourceByID(item.ResourceID)
+		if r != nil && r.Type == "prompt" {
+			data, err := os.ReadFile(deployment.TargetPath)
+			if err != nil {
+				return "broken"
+			}
+			if util.HasPromptMarkers(string(data), item.ResourceID) {
+				return "ok"
+			}
+			return "broken"
+		}
+
 		// Config 合并部署: targetPath 是配置文件,检查 link_path 对应的 key 是否仍在
 		format := util.DetectConfigFormat(deployment.TargetPath)
 		if format == "" {
@@ -1317,11 +1449,24 @@ func (s *DeployService) RestoreFromMeta(targetPath, aliasID string) {
 	}
 }
 
-// CheckConflicts Config 批量部署预检冲突（不写入任何文件）
+// CheckConflicts 批量部署预检冲突（不写入任何文件）
+//
+// 按资源类型分流:
+//   - prompt: 走 findPromptConflicts (按分隔符独立判定每对 resource×target,无 Union-Find)
+//   - config: 原有逻辑 (Union-Find + key 冲突)
+//
 // 检测：1. 待部署资源之间的 key 冲突  2. 与目标文件已有内容（原始+已部署Config）的冲突
 // 返回 has_conflict 仅在存在真正需要用户决策的冲突时为 true
 // (ignored=被牺牲的资源, existing=与已有内容的冲突)；纯 applied 项不算冲突
 func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.CheckConflictsResp, error) {
+	// 资源类型分流: 取第一个待部署资源的 type 决定走哪条预检路径
+	if len(req.ResourceIDs) > 0 {
+		first, _ := s.resourceRepo.GetResourceByID(req.ResourceIDs[0])
+		if first != nil && first.Type == "prompt" {
+			return s.checkPromptConflicts(req)
+		}
+	}
+
 	// 解析目标路径
 	targetPath := req.TargetPath
 	if req.AliasID != nil && *req.AliasID != "" {
@@ -1592,4 +1737,115 @@ func (s *DeployService) checkConfigKeyConflict(targetPath, key, _ string) bool {
 		}
 	}
 	return false
+}
+
+// checkPromptConflicts Prompt 批量部署预检冲突 (PRD §4.1)
+//
+// 算法:
+//   - 每对 (resource, target) 独立判定,仅依赖 util.HasPromptMarkers
+//   - status='existing' 当目标已含本资源的分隔符块
+//   - status='applied'  否则
+//   - group 始终 = 0 (UUID 唯一,资源间永不撞)
+//
+// 输入:
+//   - ResourceIDs: 待部署的 prompt 资源 ID 列表
+//   - TargetPaths: 多目标 (优先生效); 为空时回退到 TargetPath/AliasID 单目标
+//
+// 输出: 每个 (resource, target) 对一条 ConflictItem (含 TargetPath)
+//
+// has_conflict 在存在 status='existing' 项时为 true (与 config 一致语义)
+func (s *DeployService) checkPromptConflicts(req *model.CheckConflictsReq) (*model.CheckConflictsResp, error) {
+	// 1. 解析多目标路径列表
+	targets, err := s.resolvePromptTargets(req)
+	if err != nil {
+		return nil, err
+	}
+	if len(targets) == 0 {
+		return &model.CheckConflictsResp{HasConflict: false, Conflicts: []model.ConflictItem{}}, nil
+	}
+
+	// 2. 加载所有待部署 prompt 资源
+	type resInfo struct {
+		id   string
+		name string
+	}
+	var resources []resInfo
+	for _, rid := range req.ResourceIDs {
+		r, rErr := s.resourceRepo.GetResourceByID(rid)
+		if rErr != nil || r == nil {
+			continue
+		}
+		resources = append(resources, resInfo{id: rid, name: r.Name})
+	}
+
+	// 3. 逐对判定: 读每个 target 文件全文,对每个 resource 调用 HasPromptMarkers
+	conflicts := make([]model.ConflictItem, 0, len(resources)*len(targets))
+	hasConflict := false
+	for _, tp := range targets {
+		var targetText string
+		if util.FileExists(tp) {
+			data, _ := os.ReadFile(tp)
+			targetText = string(data)
+		}
+		for _, r := range resources {
+			status := "applied"
+			if util.HasPromptMarkers(targetText, r.id) {
+				status = "existing"
+				hasConflict = true
+			}
+			conflicts = append(conflicts, model.ConflictItem{
+				ResourceID:   r.id,
+				ResourceName: r.name,
+				TargetPath:   tp,
+				Status:       status,
+				Group:        0,
+			})
+		}
+	}
+
+	return &model.CheckConflictsResp{
+		HasConflict: hasConflict,
+		Conflicts:   conflicts,
+	}, nil
+}
+
+// resolvePromptTargets 解析 Prompt 预检的多目标路径列表
+//
+// 优先级 (互斥):
+//  1. req.TargetPaths 非空 → 逐个 ExpandPath/Clean 后返回
+//  2. req.AliasID 非空    → 查 alias.Path,展开返回单元素列表
+//  3. req.TargetPath 非空 → ExpandPath/Clean 后返回单元素列表
+//  4. 全空                → 空列表 (调用方判空)
+func (s *DeployService) resolvePromptTargets(req *model.CheckConflictsReq) ([]string, error) {
+	if len(req.TargetPaths) > 0 {
+		out := make([]string, 0, len(req.TargetPaths))
+		for _, tp := range req.TargetPaths {
+			if tp == "" {
+				continue
+			}
+			expanded, err := util.ExpandPath(tp)
+			if err != nil {
+				return nil, model.NewBizError(model.ErrDeployInvalid,
+					fmt.Sprintf("展开目标路径失败: %v", err))
+			}
+			out = append(out, filepath.Clean(expanded))
+		}
+		return out, nil
+	}
+
+	if req.AliasID != nil && *req.AliasID != "" {
+		alias, err := s.aliasRepo.GetAliasByID(*req.AliasID)
+		if err != nil || alias == nil {
+			return nil, model.NewBizError(model.ErrAliasNotFound, "路径别名不存在")
+		}
+		expanded, _ := util.ExpandPath(alias.Path)
+		return []string{filepath.Clean(expanded)}, nil
+	}
+
+	if req.TargetPath != "" {
+		expanded, _ := util.ExpandPath(req.TargetPath)
+		return []string{filepath.Clean(expanded)}, nil
+	}
+
+	return nil, nil
 }

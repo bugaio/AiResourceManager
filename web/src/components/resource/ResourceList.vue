@@ -24,6 +24,7 @@ const typeLabel: Record<string, string> = {
   skill: 'Skill',
   config: 'Config',
   agent: 'Agent',
+  prompt: 'Prompt',
 }
 
 /** 格式化时间 */

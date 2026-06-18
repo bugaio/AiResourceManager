@@ -381,6 +381,11 @@ function handleBatchDeploy() {
         @batch-deploy="handleBatchDeploy"
       />
       <BatchBar
+        v-show="uiStore.currentType === 'prompt'"
+        type="prompt"
+        @batch-deploy="handleBatchDeploy"
+      />
+      <BatchBar
         v-show="uiStore.currentType === 'agent'"
         type="agent"
         @batch-deploy="handleBatchDeploy"

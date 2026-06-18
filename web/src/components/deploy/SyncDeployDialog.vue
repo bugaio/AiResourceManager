@@ -3,8 +3,9 @@ import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { getResourceDeployTargets, deploy } from '@/api/deploy'
 import type { ResourceDeployTarget } from '@/api/deploy'
+import { useUiStore } from '@/stores/ui'
 
-/** Config 保存后同步部署弹窗 */
+/** 保存后同步部署弹窗 */
 const props = defineProps<{
   visible: boolean
   resourceId: string
@@ -14,6 +15,19 @@ const emit = defineEmits<{
   (e: 'update:visible', val: boolean): void
   (e: 'synced'): void
 }>()
+
+const uiStore = useUiStore()
+
+/** 资源类型中文标签 */
+const resourceLabel = computed(() => {
+  switch (uiStore.currentType) {
+    case 'prompt': return 'Prompt'
+    case 'skill':  return 'Skill'
+    case 'agent':  return 'Agent'
+    case 'config': return 'Config'
+    default:       return 'Config'
+  }
+})
 
 const loading = ref(false)
 const deploying = ref(false)
@@ -107,7 +121,7 @@ function handleClose() {
   >
     <div v-loading="loading" class="flex flex-col gap-3">
       <p class="text-sm text-gray-600 dark:text-gray-400">
-        以下路径已部署该 Config 资源，勾选后将以最新内容重新部署：
+        以下路径已部署该 {{ resourceLabel }} 资源，勾选后将以最新内容重新部署：
       </p>
 
       <!-- 路径列表（可滚动） -->

@@ -1,5 +1,5 @@
 /** 资源类型 */
-export type ResourceType = 'skill' | 'agent' | 'config'
+export type ResourceType = 'skill' | 'agent' | 'config' | 'prompt'
 
 /** 资源接口 */
 export interface Resource {

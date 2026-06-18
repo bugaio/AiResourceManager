@@ -22,11 +22,12 @@ const aliasStore = useAliasStore()
 const uiStore = useUiStore()
 
 // Config 模块: 手动输入的路径必须以 .json/.jsonc/.yaml/.yml/.toml 结尾
-const manualPlaceholder = computed(() =>
-  uiStore.currentType === 'config'
-    ? '输入配置文件路径,如 ~/Library/.../config.json'
-    : '输入目标路径,如 /path/to/target'
-)
+// Prompt 模块: 必须以 .md 结尾
+const manualPlaceholder = computed(() => {
+  if (uiStore.currentType === 'config') return '输入配置文件路径,如 ~/Library/.../config.json'
+  if (uiStore.currentType === 'prompt') return '输入提示词目标文件路径,必须以 .md 结尾'
+  return '输入目标路径,如 /path/to/target'
+})
 
 // 模式:alias=选择别名, manual=手动输入
 const mode = ref<'alias' | 'manual'>('alias')

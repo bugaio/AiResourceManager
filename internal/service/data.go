@@ -67,8 +67,8 @@ func (s *DataService) Export(targetPath string) (*model.ExportResult, error) {
 	fileCount++
 	totalSize += n
 
-	// 复制资源目录: skills/, agents/, configs/
-	for _, dir := range []string{"skills", "agents", "configs"} {
+	// 复制资源目录: skills/, agents/, configs/, prompts/
+	for _, dir := range []string{"skills", "agents", "configs", "prompts"} {
 		srcDir := filepath.Join(s.baseDir, dir)
 		if !util.IsDir(srcDir) {
 			continue
@@ -363,6 +363,22 @@ func (s *DataService) copyResourceFiles(resourceType, uuid, sourcePath, original
 		}
 		return dstFile, nil
 
+	case "prompt":
+		// prompts/{uuid}.md
+		srcFile := filepath.Join(sourcePath, "prompts", filepath.Base(originalPath))
+		if !util.FileExists(srcFile) {
+			srcFile = filepath.Join(sourcePath, "prompts", uuid+".md")
+		}
+		dstFile := filepath.Join(s.baseDir, "prompts", uuid+".md")
+		os.MkdirAll(filepath.Dir(dstFile), 0755)
+		if util.FileExists(srcFile) {
+			_, err := copyFile(srcFile, dstFile)
+			if err != nil {
+				return "", err
+			}
+		}
+		return dstFile, nil
+
 	default:
 		return "", fmt.Errorf("不支持的资源类型: %s", resourceType)
 	}
@@ -471,6 +487,10 @@ func extractUUIDFromPath(path, baseDir string) string {
 			return strings.TrimSuffix(name, ext)
 		}
 		return name
+	case "prompts":
+		// prompts/{uuid}.md
+		name := parts[1]
+		return strings.TrimSuffix(name, ".md")
 	default:
 		return ""
 	}

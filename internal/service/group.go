@@ -51,7 +51,7 @@ func (s *GroupService) SetDeployService(svc *DeployService) {
 func (s *GroupService) CreateGroup(req *model.CreateGroupReq) (*model.Group, error) {
 	// 校验类型
 	if !isValidType(req.Type) {
-		return nil, model.NewBizError(model.ErrGroupInvalid, "type 必须为 skill/agent/config")
+		return nil, model.NewBizError(model.ErrGroupInvalid, "type 必须为 skill/agent/config/prompt")
 	}
 	// 校验名称
 	if strings.TrimSpace(req.Name) == "" {
