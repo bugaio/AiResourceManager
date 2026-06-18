@@ -45,6 +45,10 @@ interface SelectedTarget {
   aliasId?: string
   aliasName?: string
   path: string
+  /** 是否保存为常用路径别名 */
+  saveAsAlias?: boolean
+  /** 别名名称（仅手输路径 + saveAsAlias 时使用） */
+  alias?: string
 }
 const selectedTargets = ref<SelectedTarget[]>([])
 
@@ -61,8 +65,6 @@ const selectedAliasIds = computed(() => {
 
 // 其他表单状态
 const track = ref(false)
-const saveAsAlias = ref(false)
-const aliasName = ref('')
 
 // Config 冲突弹窗
 const conflictDialogVisible = ref(false)
@@ -77,8 +79,6 @@ watch(() => props.visible, (val) => {
     currentPath.value = ''
     currentAliasId.value = undefined
     track.value = false
-    saveAsAlias.value = false
-    aliasName.value = ''
     isManualPath.value = false
     pathInputKey.value += 1
     conflictDialogVisible.value = false
@@ -112,6 +112,26 @@ function handleAddTarget() {
     return
   }
 
+  // 手动输入模式下，检查该路径是否已存在别名
+  if (isManualPath.value) {
+    const existing = aliasStore.aliases.find(a => a.path === path)
+    if (existing) {
+      ElMessage.warning(`该路径已存在别名：${existing.name}`)
+      // 直接添加到已选列表
+      selectedTargets.value.push({
+        aliasId: existing.id,
+        aliasName: existing.name,
+        path,
+      })
+      // 清空输入，切换回别名模式
+      currentPath.value = ''
+      currentAliasId.value = undefined
+      isManualPath.value = false
+      pathInputKey.value += 1
+      return
+    }
+  }
+
   const alias = currentAliasId.value
     ? aliasStore.aliases.find(a => a.id === currentAliasId.value)
     : undefined
@@ -122,10 +142,9 @@ function handleAddTarget() {
     path,
   })
 
-  // 重置 PathInput
+  // 重置当前选择
   currentPath.value = ''
   currentAliasId.value = undefined
-  pathInputKey.value += 1
 }
 
 /** 移除已选路径 */
@@ -142,11 +161,6 @@ function handleClose() {
 async function handleConfirm() {
   if (selectedTargets.value.length === 0) {
     ElMessage.warning('请至少添加一个目标路径')
-    return
-  }
-
-  if (saveAsAlias.value && !aliasName.value.trim()) {
-    ElMessage.warning('请输入路径别名名称')
     return
   }
 
@@ -304,13 +318,12 @@ async function handleConflictConfirm(selectedPaths: string[]) {
   handleClose()
 }
 
-/** 保存手动路径为别名 */
+/** 保存手动路径为别名（每个手输路径独立控制） */
 async function saveAlias() {
-  if (saveAsAlias.value && aliasName.value.trim()) {
-    const manualTarget = selectedTargets.value.find(t => !t.aliasId)
-    if (manualTarget) {
+  for (const target of selectedTargets.value) {
+    if (target.saveAsAlias && target.alias?.trim()) {
       try {
-        await aliasStore.createAlias({ name: aliasName.value.trim(), path: manualTarget.path })
+        await aliasStore.createAlias({ name: target.alias.trim(), path: target.path })
       } catch (aliasErr: any) {
         ElMessage.warning(aliasErr?.message || '路径别名保存失败')
       }
@@ -351,36 +364,44 @@ async function saveAlias() {
         <div class="text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
           已选路径 ({{ selectedTargets.length }})
         </div>
-        <div class="max-h-32 overflow-y-auto space-y-1">
+        <div class="max-h-48 overflow-y-auto space-y-1.5">
           <div
             v-for="(target, index) in selectedTargets"
             :key="index"
-            class="flex items-center justify-between px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded"
+            class="flex flex-col gap-2"
           >
-            <span class="text-sm text-gray-700 dark:text-gray-300 truncate flex-1" :title="target.path">
-              {{ target.aliasName ? `${target.aliasName} (${target.path})` : target.path }}
-            </span>
-            <button
-              class="ml-2 p-0.5 text-gray-400 hover:text-red-500 flex-shrink-0"
-              @click="handleRemoveTarget(index)"
+            <div
+              class="flex items-center justify-between gap-3 px-3 py-1.5 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded"
             >
-              <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
-                <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
-              </svg>
-            </button>
+              <span class="text-sm text-gray-700 dark:text-gray-300 truncate flex-1" :title="target.path">
+                {{ target.aliasName ? `${target.aliasName} (${target.path})` : target.path }}
+              </span>
+              <el-checkbox
+                v-if="!target.aliasId"
+                v-model="target.saveAsAlias"
+                size="small"
+                class="flex-shrink-0"
+              >
+                保存为常用
+              </el-checkbox>
+              <button
+                class="p-0.5 text-gray-400 hover:text-red-500 flex-shrink-0"
+                @click="handleRemoveTarget(index)"
+              >
+                <svg xmlns="http://www.w3.org/2000/svg" class="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
+                  <path fill-rule="evenodd" d="M4.293 4.293a1 1 0 011.414 0L10 8.586l4.293-4.293a1 1 0 111.414 1.414L11.414 10l4.293 4.293a1 1 0 01-1.414 1.414L10 11.414l-4.293 4.293a1 1 0 01-1.414-1.414L8.586 10 4.293 5.707a1 1 0 010-1.414z" clip-rule="evenodd" />
+                </svg>
+              </button>
+            </div>
+            <el-input
+              v-if="target.saveAsAlias"
+              v-model="target.alias"
+              size="small"
+              placeholder="请输入别名"
+              class="ml-8 w-[calc(100%-2rem)]"
+            />
           </div>
         </div>
-      </div>
-
-      <!-- 保存为常用路径（有手动输入路径时显示） -->
-      <div v-if="selectedTargets.some(t => !t.aliasId)" class="flex flex-col gap-2">
-        <el-checkbox v-model="saveAsAlias">保存手动路径为常用路径</el-checkbox>
-        <el-input
-          v-if="saveAsAlias"
-          v-model="aliasName"
-          size="small"
-          placeholder="输入路径别名名称"
-        />
       </div>
 
       <!-- 跟踪开关（仅分组部署时显示） -->
