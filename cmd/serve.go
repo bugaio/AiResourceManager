@@ -122,12 +122,28 @@ func runServe(cmd *cobra.Command, args []string) error {
 	dataSvc := service.NewDataService(resourceRepo, groupRepo, aliasRepo, baseDir, cfg.DBPath)
 	dataHandler := handler.NewDataHandler(dataSvc)
 
+	// === Preset / PathGroup 模块 ===
+	presetRepo := repo.NewPresetRepo(database)
+	pathGroupRepo := repo.NewPathGroupRepo(database)
+
+	// 注入 presetRepo 到 deploy/resource 服务（用于 preset 部署同步、删除拦截 1005）
+	deploySvc.SetPresetRepo(presetRepo)
+	deploySvc.SetPathGroupRepo(pathGroupRepo)
+	deploySvc.SetHub(hub)
+	resourceSvc.SetPresetRepo(presetRepo)
+
+	pathGroupSvc := service.NewPathGroupService(pathGroupRepo, hub)
+	presetSvc := service.NewPresetService(presetRepo, resourceRepo, resourceSvc, deploySvc, hub, logger)
+
+	pathGroupHandler := handler.NewPathGroupHandler(pathGroupSvc)
+	presetHandler := handler.NewPresetHandler(presetSvc)
+
 	// 创建处理器
 	wsHandler := handler.NewWSHandler(hub, logger)
 	healthHandler := handler.NewHealthHandler()
 
 	// 创建并启动服务（传入嵌入的静态资源）
-	srv := server.New(cfg, healthHandler, wsHandler, resourceHandler, groupHandler, aliasHandler, deployHandler, dataHandler, logger, EmbeddedFS)
+	srv := server.New(cfg, healthHandler, wsHandler, resourceHandler, groupHandler, aliasHandler, deployHandler, dataHandler, presetHandler, pathGroupHandler, logger, EmbeddedFS)
 	addr := ":" + strconv.Itoa(cfg.Port)
 
 	httpServer := &http.Server{
@@ -155,6 +171,8 @@ func runServe(cmd *cobra.Command, args []string) error {
 	watcherSvc := service.NewWatcherService(hub, resourceRepo, baseDir, logger)
 	// 注入到 ResourceService,使主动删除时抑制 fsnotify 误报
 	resourceSvc.SetWatcherService(watcherSvc)
+	// 注入 presetRepo,使命中 preset 的资源变更时同时广播 preset:resource_changed
+	watcherSvc.SetPresetRepo(presetRepo)
 	if err := watcherSvc.Start(); err != nil {
 		sugar.Warnf("文件监听服务启动失败: %v", err)
 	}

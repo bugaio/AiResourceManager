@@ -5,14 +5,16 @@ import "time"
 
 // Resource 资源实体，对应数据库 resource 表
 type Resource struct {
-	ID          string    `json:"id"`          // UUID 主键
-	Name        string    `json:"name"`        // 资源名称
-	Type        string    `json:"type"`        // 资源类型: skill/agent/config/prompt
-	Path        string    `json:"path"`        // 文件系统路径
-	Description string    `json:"description"` // 资源描述
-	Metadata    string    `json:"metadata"`    // 扩展元数据 JSON
-	CreatedAt   time.Time `json:"created_at"`  // 创建时间
-	UpdatedAt   time.Time `json:"updated_at"`  // 更新时间
+	ID            string    `json:"id"`              // UUID 主键
+	Name          string    `json:"name"`            // 资源名称
+	Type          string    `json:"type"`            // 资源类型: skill/agent/config/prompt
+	Path          string    `json:"path"`            // 文件系统路径
+	Description   string    `json:"description"`     // 资源描述
+	Metadata      string    `json:"metadata"`        // 扩展元数据 JSON
+	CreatedAt     time.Time `json:"created_at"`      // 创建时间
+	UpdatedAt     time.Time `json:"updated_at"`      // 更新时间
+	OwnerPresetID *string   `json:"owner_preset_id"` // 非 nil 表示该资源是某 preset 的私有资源
+	PresetLinks   []PresetLinkInfo `json:"preset_links,omitempty"` // 关联此资源的 preset 列表（list 接口填充，用于显示关联标识）
 }
 
 // CreateResourceReq 创建资源请求

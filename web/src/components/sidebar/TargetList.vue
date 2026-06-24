@@ -84,7 +84,7 @@ async function handleDeleteAlias(aliasId: string, aliasName: string) {
 </script>
 
 <template>
-  <div class="flex flex-col gap-1.5">
+  <div class="flex flex-col gap-2.5 px-1 py-1">
     <!-- 加载状态 -->
     <div v-if="deployStore.loading && deployStore.targets.length === 0" class="text-xs text-gray-400 dark:text-gray-500 italic">
       加载中...
@@ -102,8 +102,10 @@ async function handleDeleteAlias(aliasId: string, aliasName: string) {
         <!-- 未被部署的纯别名 -->
         <div
           v-else-if="item.alias"
-          class="flex items-center gap-1.5 px-2 py-1.5 rounded border border-dashed border-purple-200 dark:border-purple-700 bg-purple-50/50 dark:bg-purple-900/20"
+          class="relative flex items-center gap-1.5 pl-3 pr-2 py-2 rounded-lg shadow-sm ring-1 ring-purple-200/70 dark:ring-purple-900/40 bg-purple-50/50 dark:bg-purple-900/20 overflow-hidden transition-all hover:shadow-md"
         >
+          <!-- 左侧状态色条：纯别名=紫 -->
+          <span class="absolute left-0 top-0 bottom-0 w-1 bg-purple-400 dark:bg-purple-500"></span>
           <svg xmlns="http://www.w3.org/2000/svg" class="w-3.5 h-3.5 text-purple-400 flex-shrink-0" viewBox="0 0 20 20" fill="currentColor">
             <path d="M10.707 2.293a1 1 0 00-1.414 0l-7 7a1 1 0 001.414 1.414L4 10.414V17a1 1 0 001 1h2a1 1 0 001-1v-2a1 1 0 011-1h2a1 1 0 011 1v2a1 1 0 001 1h2a1 1 0 001-1v-6.586l.293.293a1 1 0 001.414-1.414l-7-7z" />
           </svg>

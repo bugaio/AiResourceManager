@@ -14,6 +14,7 @@ const emit = defineEmits<{
   (e: 'deploy', resource: Resource): void
   (e: 'delete', resource: Resource): void
   (e: 'removeFromGroup', resource: Resource): void
+  (e: 'viewLinks', resource: Resource): void
 }>()
 
 const selectionStore = useSelectionStore()
@@ -48,12 +49,16 @@ const formattedTime = computed(() => {
   return d.toLocaleDateString('zh-CN', { month: 'short', day: 'numeric' })
 })
 
+/** 是否被 preset 关联 */
+const hasLinks = computed(() => !!props.resource.preset_links && props.resource.preset_links.length > 0)
+
 /** 下拉菜单指令处理 */
 function handleCommand(cmd: string) {
   if (cmd === 'edit') emit('edit', props.resource)
   else if (cmd === 'editContent') emit('editContent', props.resource)
   else if (cmd === 'deploy') emit('deploy', props.resource)
   else if (cmd === 'reveal') handleReveal()
+  else if (cmd === 'viewLinks') emit('viewLinks', props.resource)
   else if (cmd === 'delete') {
     if (isAllGroup.value) {
       emit('delete', props.resource)
@@ -81,31 +86,42 @@ async function handleReveal() {
     :class="{ 'ring-2 ring-blue-400 border-blue-400': checked }"
     @click="handleCheck"
   >
-    <!-- 顶部：复选框 + 操作菜单 -->
+    <!-- 顶部：复选框 + 锁标识 + 操作菜单 -->
     <div class="flex items-center justify-between">
       <el-checkbox :model-value="checked" @change="handleCheck" @click.stop aria-label="选择此资源" />
-      <el-dropdown trigger="click" @command="handleCommand">
-        <button
-          class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400"
-          aria-label="更多操作"
-          @click.stop
+      <div class="flex items-center gap-1">
+        <el-tooltip
+          v-if="resource.preset_links && resource.preset_links.length > 0"
+          effect="dark"
+          placement="top"
+          :content="'被以下 Preset 管理：' + resource.preset_links.map(p => p.name).join(', ')"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-            <circle cx="4" cy="10" r="1.5" />
-            <circle cx="10" cy="10" r="1.5" />
-            <circle cx="16" cy="10" r="1.5" />
-          </svg>
-        </button>
-        <template #dropdown>
-          <el-dropdown-menu>
-            <el-dropdown-item command="edit">编辑</el-dropdown-item>
-            <el-dropdown-item command="editContent">编辑内容</el-dropdown-item>
-            <el-dropdown-item command="deploy">部署</el-dropdown-item>
-            <el-dropdown-item command="reveal">在文件管理器中打开</el-dropdown-item>
-            <el-dropdown-item command="delete" divided>{{ isAllGroup ? '删除' : '从分组移除' }}</el-dropdown-item>
-          </el-dropdown-menu>
-        </template>
-      </el-dropdown>
+          <span class="text-base leading-none" aria-label="被 Preset 关联">🔗</span>
+        </el-tooltip>
+        <el-dropdown trigger="click" @command="handleCommand">
+          <button
+            class="p-1 rounded hover:bg-gray-100 dark:hover:bg-gray-700 text-gray-400"
+            aria-label="更多操作"
+            @click.stop
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+              <circle cx="4" cy="10" r="1.5" />
+              <circle cx="10" cy="10" r="1.5" />
+              <circle cx="16" cy="10" r="1.5" />
+            </svg>
+          </button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item command="edit">编辑</el-dropdown-item>
+              <el-dropdown-item command="editContent">编辑内容</el-dropdown-item>
+              <el-dropdown-item command="deploy">部署</el-dropdown-item>
+              <el-dropdown-item command="reveal">在文件管理器中打开</el-dropdown-item>
+              <el-dropdown-item v-if="hasLinks" command="viewLinks" divided>查看关联</el-dropdown-item>
+              <el-dropdown-item command="delete" divided>{{ isAllGroup ? '删除' : '从分组移除' }}</el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </div>
     </div>
     <!-- 名称 -->
     <p class="font-semibold text-gray-800 dark:text-gray-100 truncate">{{ resource.name }}</p>

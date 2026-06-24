@@ -12,6 +12,10 @@ export interface Resource {
   file_path: string
   created_at: string
   updated_at: string
+  /** 私有资源归属的 preset（NULL=全局） */
+  owner_preset_id?: string | null
+  /** 关联此资源的 preset 列表（list 接口附带，用于显示 🔒） */
+  preset_links?: Array<{ id: string; name: string }>
 }
 
 /** 分页响应 */

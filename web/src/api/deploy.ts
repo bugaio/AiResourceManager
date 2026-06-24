@@ -49,11 +49,17 @@ export function openFolder(path: string): Promise<void> {
   return request.post('/deployments/open-folder', { path })
 }
 
-/** 资源已部署到的目标路径（Config 保存后同步用） */
+/** 资源保存后同步提示子项 —— 只含「包含当前资源」的部署，按路径组分组展示 */
 export interface ResourceDeployTarget {
+  preset_id: string
+  preset_name: string
+  path_group_name: string // 该部署 target_path 匹配到的路径组名（无则空）
   deployment_id: string
+  deploy_type: string // symlink / merge
   target_path: string
   alias_name?: string
+  resource_ids: string[]
+  resource_names: string[]
   has_conflict: boolean
 }
 export function getResourceDeployTargets(resourceId: string): Promise<ResourceDeployTarget[]> {
@@ -66,6 +72,7 @@ export interface ConflictItem {
   resource_name: string
   status: 'ignored' | 'applied' | 'existing'
   group: number  // >0=冲突组号(同组内互冲突), 0=无冲突或已有内容
+  conflict_for?: string  // 仅 existing 冲突：本次待部署且触发冲突的资源名
 }
 export interface CheckConflictsResp {
   has_conflict: boolean

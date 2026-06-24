@@ -26,6 +26,9 @@ type DeployService struct {
 	resourceRepo *repo.ResourceRepo
 	aliasRepo    *repo.AliasRepo
 	groupRepo    *repo.GroupRepo
+	presetRepo   *repo.PresetRepo
+	pathGroupRepo *repo.PathGroupRepo
+	hub          *Hub
 	baseDir      string // ~/.aiManager
 }
 
@@ -44,6 +47,33 @@ func NewDeployService(deployRepo *repo.DeployRepo, resourceRepo *repo.ResourceRe
 		groupRepo:    groupRepo,
 		baseDir:      baseDir,
 	}
+}
+
+// SetPresetRepo 注入 preset 数据仓库（用于 SyncPresetDeployments / 重新部署时加载关联）
+func (s *DeployService) SetPresetRepo(r *repo.PresetRepo) {
+	s.presetRepo = r
+}
+
+// SetPathGroupRepo 注入路径组数据仓库（用于把部署 target_path 匹配回所属路径组名）
+func (s *DeployService) SetPathGroupRepo(r *repo.PathGroupRepo) {
+	s.pathGroupRepo = r
+}
+
+// SetHub 注入 WebSocket Hub（用于广播 preset 部署事件）
+func (s *DeployService) SetHub(h *Hub) {
+	s.hub = h
+}
+
+// broadcastEvent 向所有 WS 客户端广播事件
+func (s *DeployService) broadcastEvent(eventType string, data map[string]interface{}) {
+	if s.hub == nil {
+		return
+	}
+	msg, _ := json.Marshal(map[string]interface{}{
+		"type": eventType,
+		"data": data,
+	})
+	s.hub.Broadcast(msg)
 }
 
 // deployResultItem 部署结果内部结构
@@ -170,6 +200,7 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 		DeployType: finalDeployType,
 		Track:      track,
 		CreatedAt:  time.Now().Format(time.RFC3339),
+		PresetID:   req.PresetID,
 	}
 
 	if _, err := s.deployRepo.InsertDeployment(deployment); err != nil {
@@ -658,7 +689,10 @@ func (s *DeployService) deploySkill(resource *model.Resource, targetPath string,
 		os.RemoveAll(linkDst)
 	}
 
-	source := filepath.Join(s.baseDir, "skills", resource.ID)
+	if resource.Path == "" {
+		return "", model.NewBizError(model.ErrDeployFailed, "资源存储路径为空")
+	}
+	source := resource.Path
 	if err := util.CreateSymlink(source, linkDst); err != nil {
 		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("创建符号链接失败: %v", err))
 	}
@@ -681,7 +715,10 @@ func (s *DeployService) deployAgent(resource *model.Resource, targetPath string,
 		os.Remove(linkDst)
 	}
 
-	source := filepath.Join(s.baseDir, "agents", resource.ID+".md")
+	if resource.Path == "" {
+		return "", model.NewBizError(model.ErrDeployFailed, "资源存储路径为空")
+	}
+	source := resource.Path
 	if err := util.CreateSymlink(source, linkDst); err != nil {
 		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("创建符号链接失败: %v", err))
 	}
@@ -706,12 +743,11 @@ func (s *DeployService) deployConfig(resource *model.Resource, targetPath string
 	if err != nil {
 		return "", model.NewBizError(model.ErrDeployFailed, err.Error())
 	}
+	// 空片段视为 {}：无需合并,目标内容不变(新建未编辑的 config 即此情形)。
+	// 返回空 link_path,健康检查对空 config 直接判定 ok(无 key 可校验)。
 	if len(cfgFragment) == 0 {
-		return "", model.NewBizError(model.ErrDeployFailed, "Config 片段为空")
+		return "", nil
 	}
-
-	// 3. 收集本次会写入目标的所有顶层 key(用于冲突检测)
-	newKeys := flatKeys(cfgFragment)
 
 	// 4. 链接 path(健康检查/撤销的锚点)
 	//    优先 mcpServers 子键下的第一项(兼容历史),否则取顶层第一项
@@ -729,26 +765,26 @@ func (s *DeployService) deployConfig(resource *model.Resource, targetPath string
 		targetKeys = map[string]interface{}{}
 	}
 
-	// 6. 检测冲突
-	conflictResources := s.findConfigConflicts(targetPath, resource.ID, newKeys)
+	// 6. 检测冲突(路径树语义:相同位置相同 key 且至少一方非 map 才算冲突)
+	conflictResources := s.findConfigConflicts(targetPath, resource.ID, cfgFragment)
+	// 与目标原始内容(非已部署 MCP 管理的部分)按同样语义比对
 	managedKeys := s.getManagedKeys(targetPath, resource.ID)
-	var originalConflictKeys []string
-	for k := range newKeys {
+	originalOnly := map[string]interface{}{}
+	for k, v := range targetKeys {
 		if managedKeys[k] {
 			continue
 		}
-		if _, exists := targetKeys[k]; exists {
-			originalConflictKeys = append(originalConflictKeys, k)
-		}
+		originalOnly[k] = v
 	}
-	hasConflict := len(conflictResources) > 0 || len(originalConflictKeys) > 0
+	hasOriginalConflict := configsConflict(cfgFragment, originalOnly)
+	hasConflict := len(conflictResources) > 0 || hasOriginalConflict
 
 	if hasConflict && !force {
 		names := make([]string, 0)
 		for _, cr := range conflictResources {
 			names = append(names, cr.name)
 		}
-		if len(originalConflictKeys) > 0 {
+		if hasOriginalConflict {
 			names = append(names, "原始内容")
 		}
 		return "", model.NewBizErrorWithData(
@@ -869,6 +905,54 @@ func pickLinkPath(m map[string]interface{}) string {
 	return ""
 }
 
+// configsConflict 按"相同位置相同 key"的路径树语义判断两个 config 片段是否冲突。
+//
+// 规则(与 util.DeepMerge 的覆盖语义一致):
+//   - 沿相同路径下行,某一层两边都存在同一个 key 时:
+//       · 两边该 key 的值【都是 map】 → 不是冲突点,继续向更深一层递归比较
+//       · 否则(任一方为标量/数组,或类型不一致) → 该位置发生覆盖,即【冲突】
+//   - 某层 key 不同 → 该分支分叉,不再深入(不冲突)
+//
+// 示例:
+//   {a:{a1:{...a51,a52}}} vs {a:{a1:{...a53}}}      → a→a1 都是 map 继续深入,
+//        最内层 a51/a52 与 a53 无同名 key → 不冲突
+//   {a:{a1:{...}}}       vs {a:{b1:{...}}}          → a 同名且都是 map 深入,
+//        a1≠b1 分叉 → 不冲突
+//   {a:{a1:1}}           vs {a:{a1:2}}              → a 深入,a1 同名但值非 map → 冲突
+func configsConflict(a, b map[string]interface{}) bool {
+	for k, av := range a {
+		bv, ok := b[k]
+		if !ok {
+			continue // 该位置 b 没有同名 key → 分叉,跳过
+		}
+		amap, aOk := av.(map[string]interface{})
+		bmap, bOk := bv.(map[string]interface{})
+		if aOk && bOk {
+			// 两边都是 map → 继续向更深一层比较
+			if configsConflict(amap, bmap) {
+				return true
+			}
+			continue
+		}
+		// 同名 key 但至少一方不是 map → 覆盖,冲突
+		return true
+	}
+	return false
+}
+
+// readConfigFragmentByID 按资源 ID 读取其 config 片段 map(失败返回空 map)
+func (s *DeployService) readConfigFragmentByID(resourceID string) map[string]interface{} {
+	r, err := s.resourceRepo.GetResourceByID(resourceID)
+	if err != nil || r == nil {
+		return map[string]interface{}{}
+	}
+	cfg, _, err := s.readConfigFragment(r)
+	if err != nil || cfg == nil {
+		return map[string]interface{}{}
+	}
+	return cfg
+}
+
 // readConfigFragment 从 config 资源存储路径读取片段 map
 // 资源 path 由 createFiles 写入,后缀由用户创建时选定(默认 .json)
 func (s *DeployService) readConfigFragment(resource *model.Resource) (map[string]interface{}, util.ConfigFormat, error) {
@@ -885,8 +969,8 @@ type configConflictInfo struct {
 	name         string
 }
 
-// findConfigConflicts 查找目标路径下已部署的 Config 中与新 key 集合有冲突的资源
-func (s *DeployService) findConfigConflicts(targetPath, selfResourceID string, newKeys map[string]bool) []configConflictInfo {
+// findConfigConflicts 查找目标路径下已部署的 Config 中与新 config 片段(按路径树语义)冲突的资源
+func (s *DeployService) findConfigConflicts(targetPath, selfResourceID string, newCfg map[string]interface{}) []configConflictInfo {
 	allDeps, err := s.deployRepo.GetDeploymentsByTarget()
 	if err != nil {
 		return nil
@@ -911,15 +995,8 @@ func (s *DeployService) findConfigConflicts(targetPath, selfResourceID string, n
 			if seen[item.ResourceID] {
 				continue
 			}
-			existingKeys := s.getConfigResourceKeys(item.ResourceID)
-			hasOverlap := false
-			for k := range existingKeys {
-				if newKeys[k] {
-					hasOverlap = true
-					break
-				}
-			}
-			if hasOverlap {
+			existingCfg := s.readConfigFragmentByID(item.ResourceID)
+			if configsConflict(newCfg, existingCfg) {
 				seen[item.ResourceID] = true
 				resName := item.ResourceID
 				if r, rErr := s.resourceRepo.GetResourceByID(item.ResourceID); rErr == nil && r != nil {
@@ -1184,6 +1261,10 @@ func (s *DeployService) checkItemHealth(deployment *model.Deployment, item *mode
 		}
 
 		// Config 合并部署: targetPath 是配置文件,检查 link_path 对应的 key 是否仍在
+		// 空 link_path 表示空 config 片段(无 key 写入目标),无可校验内容,直接判 ok
+		if item.LinkPath == "" {
+			return "ok"
+		}
 		format := util.DetectConfigFormat(deployment.TargetPath)
 		if format == "" {
 			return "broken"
@@ -1496,11 +1577,11 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		targetJSON = map[string]interface{}{}
 	}
 
-	// 收集每个待部署资源的 key 集合
+	// 收集每个待部署资源的 config 片段(路径树语义需要完整结构,而非拍平 key 集)
 	type resKeys struct {
 		id   string
 		name string
-		keys map[string]bool
+		cfg  map[string]interface{}
 	}
 	var pending []resKeys
 	for _, rid := range req.ResourceIDs {
@@ -1508,11 +1589,10 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		if err != nil || r == nil {
 			continue
 		}
-		keys := s.getConfigResourceKeys(rid)
-		pending = append(pending, resKeys{id: rid, name: r.Name, keys: keys})
+		pending = append(pending, resKeys{id: rid, name: r.Name, cfg: s.readConfigFragmentByID(rid)})
 	}
 
-	// 已有内容中被已部署 MCP 管理的 key
+	// 已有内容中被已部署 MCP 管理的顶层 key(用于把"原始内容"从目标里剥离)
 	managedKeys := map[string]bool{}
 	for _, p := range pending {
 		for k, v := range s.getManagedKeys(targetPath, p.id) {
@@ -1547,14 +1627,11 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		}
 	}
 
-	// 合并有 key 交集的资源
+	// 合并有路径树冲突的资源(相同位置相同 key 且至少一方非 map)
 	for i := 0; i < n; i++ {
 		for j := i + 1; j < n; j++ {
-			for k := range pending[i].keys {
-				if pending[j].keys[k] {
-					union(i, j)
-					break
-				}
+			if configsConflict(pending[i].cfg, pending[j].cfg) {
+				union(i, j)
 			}
 		}
 	}
@@ -1600,39 +1677,60 @@ func (s *DeployService) CheckConflicts(req *model.CheckConflictsReq) (*model.Che
 		}
 	}
 
-	// 2. 检测与已部署 MCP 的冲突
-	allNewKeys := map[string]bool{}
+	// 2. 检测与已部署 MCP 的冲突 —— 逐个待部署资源判定,精确归属到「本次的哪个资源」
+	//    existing 冲突项: ResourceName=已部署的冲突对象, ConflictFor=本次待部署且触发冲突的资源名
 	for _, p := range pending {
-		for k := range p.keys {
-			allNewKeys[k] = true
+		if len(p.cfg) == 0 {
+			continue
 		}
-	}
-	existingConflicts := s.findConfigConflicts(targetPath, "", allNewKeys)
-	for _, ec := range existingConflicts {
-		isSelf := false
-		for _, p := range pending {
-			if p.id == ec.resourceID {
-				isSelf = true
-				break
+		existingConflicts := s.findConfigConflicts(targetPath, "", p.cfg)
+		for _, ec := range existingConflicts {
+			// 跳过"冲突对象就是本次待部署资源自身"的情况
+			isSelf := false
+			for _, pp := range pending {
+				if pp.id == ec.resourceID {
+					isSelf = true
+					break
+				}
 			}
-		}
-		if !isSelf && !seen[ec.name] {
-			seen[ec.name] = true
-			conflicts = append(conflicts, model.ConflictItem{ResourceName: ec.name, Status: "existing"})
+			if isSelf {
+				continue
+			}
+			key := "mcp__" + ec.name + "__" + p.id
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			conflicts = append(conflicts, model.ConflictItem{
+				ResourceName: ec.name,
+				ConflictFor:  p.name,
+				Status:       "existing",
+			})
 		}
 	}
 
-	// 3. 检测与原始内容的冲突（目标中非已部署 MCP 管理的 key）
-	for k := range allNewKeys {
+	// 3. 检测与原始内容的冲突（目标中非已部署 MCP 管理的部分）—— 按路径树语义,逐资源归属
+	originalOnly := map[string]interface{}{}
+	for k, v := range targetJSON {
 		if managedKeys[k] {
 			continue
 		}
-		if _, exists := targetJSON[k]; exists {
-			if !seen["原始内容"] {
-				seen["原始内容"] = true
-				conflicts = append(conflicts, model.ConflictItem{ResourceName: "原始内容", Status: "existing"})
+		originalOnly[k] = v
+	}
+	for _, p := range pending {
+		if len(p.cfg) == 0 {
+			continue
+		}
+		if configsConflict(p.cfg, originalOnly) {
+			key := "orig__" + p.id
+			if !seen[key] {
+				seen[key] = true
+				conflicts = append(conflicts, model.ConflictItem{
+					ResourceName: "原始内容",
+					ConflictFor:  p.name,
+					Status:       "existing",
+				})
 			}
-			break
 		}
 	}
 
@@ -1655,49 +1753,93 @@ func hasRealConflict(items []model.ConflictItem) bool {
 	return false
 }
 
-// GetResourceDeployTargets 获取某资源已部署到的所有目标路径（MCP 保存后同步用）
-// 返回每个目标路径的 deployment_id、target_path 及是否有冲突
+// GetResourceDeployTargets 获取「包含当前资源」的全部部署(保存后同步用)
+//
+// 语义: 只返回真正部署了当前资源的 deployment(每条对应一个目标子路径),
+// 不再返回该 preset 下其他无关类型的部署。前端按路径组分组展示:
+// 路径组名作主标题,子行显示当前资源名 + 部署子路径。
 func (s *DeployService) GetResourceDeployTargets(resourceID string) ([]model.ResourceDeployTarget, error) {
+	// 查当前资源关联的全部部署明细(每条 item 指向一个 deployment)
 	items, err := s.deployRepo.GetDeploymentItemsByResourceID(resourceID)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
 	}
 
-	// 按 deployment 去重（同 deployment 下多 item 只出现一次）
-	seen := map[string]bool{}
+	// 资源名(子行展示用)
+	resourceName := resourceID
+	if r, rErr := s.resourceRepo.GetResourceByID(resourceID); rErr == nil && r != nil {
+		resourceName = r.Name
+	}
+
+	// preset id -> name 缓存
+	presetNameCache := map[string]string{}
+	presetNameOf := func(pid string) string {
+		if pid == "" {
+			return ""
+		}
+		if n, ok := presetNameCache[pid]; ok {
+			return n
+		}
+		n := ""
+		if p, pErr := s.presetRepo.GetPresetByID(pid); pErr == nil && p != nil {
+			n = p.Name
+		}
+		presetNameCache[pid] = n
+		return n
+	}
+
 	var result []model.ResourceDeployTarget
+	seenDep := map[string]bool{}
 
 	for _, item := range items {
-		if seen[item.DeploymentID] {
+		if seenDep[item.DeploymentID] {
 			continue
 		}
-		seen[item.DeploymentID] = true
+		seenDep[item.DeploymentID] = true
 
-		dep, err := s.deployRepo.GetDeploymentByID(item.DeploymentID)
-		if err != nil || dep == nil {
+		dep, gErr := s.deployRepo.GetDeploymentByID(item.DeploymentID)
+		if gErr != nil || dep == nil {
 			continue
 		}
 
-		// 检测冲突
+		presetID := ""
+		if dep.PresetID != nil {
+			presetID = *dep.PresetID
+		}
+
+		// 冲突检测: 仅当前资源(config 复用 CheckConflicts;prompt/symlink 恒无冲突)
 		hasConflict := false
-		if dep.DeployType == "merge" && item.LinkPath != "" {
-			hasConflict = s.checkConfigKeyConflict(dep.TargetPath, item.LinkPath, resourceID)
+		if dep.DeployType == "merge" {
+			r, _ := s.resourceRepo.GetResourceByID(resourceID)
+			if r != nil && r.Type == "config" {
+				if resp, cErr := s.CheckConflicts(&model.CheckConflictsReq{
+					ResourceIDs: []string{resourceID},
+					TargetPath:  dep.TargetPath,
+				}); cErr == nil && resp != nil {
+					hasConflict = resp.HasConflict
+				}
+			}
 		}
 
-		// 查别名名称
+		// 别名
 		aliasName := ""
 		if dep.AliasID != nil && *dep.AliasID != "" {
-			alias, aErr := s.aliasRepo.GetAliasByID(*dep.AliasID)
-			if aErr == nil && alias != nil {
+			if alias, aErr := s.aliasRepo.GetAliasByID(*dep.AliasID); aErr == nil && alias != nil {
 				aliasName = alias.Name
 			}
 		}
 
 		result = append(result, model.ResourceDeployTarget{
-			DeploymentID: dep.ID,
-			TargetPath:   dep.TargetPath,
-			AliasName:    aliasName,
-			HasConflict:  hasConflict,
+			PresetID:      presetID,
+			PresetName:    presetNameOf(presetID),
+			PathGroupName: s.pathGroupNameForTarget(dep.TargetPath),
+			DeploymentID:  dep.ID,
+			DeployType:    dep.DeployType,
+			TargetPath:    dep.TargetPath,
+			AliasName:     aliasName,
+			ResourceIDs:   []string{resourceID},
+			ResourceNames: []string{resourceName},
+			HasConflict:   hasConflict,
 		})
 	}
 
@@ -1705,6 +1847,25 @@ func (s *DeployService) GetResourceDeployTargets(resourceID string) ([]model.Res
 		result = []model.ResourceDeployTarget{}
 	}
 	return result, nil
+}
+
+// pathGroupNameForTarget 把部署的 target_path 匹配回所属路径组名(任一子路径命中即归该组)
+// 未注入 pathGroupRepo 或无匹配时返回空串
+func (s *DeployService) pathGroupNameForTarget(targetPath string) string {
+	if s.pathGroupRepo == nil {
+		return ""
+	}
+	groups, err := s.pathGroupRepo.ListPathGroups()
+	if err != nil {
+		return ""
+	}
+	for _, g := range groups {
+		if g.SkillPath == targetPath || g.AgentPath == targetPath ||
+			g.ConfigPath == targetPath || g.PromptPath == targetPath {
+			return g.Name
+		}
+	}
+	return ""
 }
 
 // checkConfigKeyConflict 检查目标文件中是否已存在该 key（顶层优先，其次扫描所有子映射）
@@ -1848,4 +2009,644 @@ func (s *DeployService) resolvePromptTargets(req *model.CheckConflictsReq) ([]st
 	}
 
 	return nil, nil
+}
+
+// === Preset 部署相关 ===
+
+// presetTypeOrder Preset 内资源类型固定按此顺序部署（symlink 类在前，merge 类在后）
+var presetTypeOrder = []string{"skill", "agent", "config", "prompt"}
+
+// typeToPathSpec 取某类型对应的子路径
+func typeToPathSpec(t string, spec *model.PathSpec) string {
+	if spec == nil {
+		return ""
+	}
+	switch t {
+	case "skill":
+		return spec.SkillPath
+	case "agent":
+		return spec.AgentPath
+	case "config":
+		return spec.ConfigPath
+	case "prompt":
+		return spec.PromptPath
+	}
+	return ""
+}
+
+// loadPresetResources 加载 preset 的全部资源（关联 + 私有），按 type 分组
+func (s *DeployService) loadPresetResources(presetID string) (map[string][]model.Resource, error) {
+	if s.presetRepo == nil {
+		return nil, model.NewBizError(model.ErrSystemInternal, "presetRepo 未注入")
+	}
+	byType := map[string][]model.Resource{}
+
+	// 关联资源
+	linkedIDs, err := s.presetRepo.ListPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+	// 私有资源
+	privateIDs, err := s.presetRepo.ListPrivateResourceIDs(presetID)
+	if err != nil {
+		return nil, err
+	}
+	all := append(append([]string{}, linkedIDs...), privateIDs...)
+	for _, rid := range all {
+		r, err := s.resourceRepo.GetResourceByID(rid)
+		if err != nil || r == nil {
+			continue
+		}
+		byType[r.Type] = append(byType[r.Type], *r)
+	}
+	return byType, nil
+}
+
+// DeployPreset 部署整个 preset 到一个路径组 / 手动路径组
+//
+// 流程:
+//  1. 加载 preset 全部资源,按 type 分组
+//  2. 解析目标路径组 (path_group_id 或 manual_paths)
+//  3. 校验 preset 包含的每个类型都有对应的子路径
+//  4. 对每个类型生成一条 deployment (preset_id 填充, target_path 填对应子路径),复用底层 Deploy
+func (s *DeployService) DeployPreset(req *model.DeployPresetReq, presetID string) ([]model.Deployment, error) {
+	presetIDPtr := &presetID
+
+	// 1. 加载资源
+	byType, err := s.loadPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(byType) == 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid, "preset 没有任何资源,无法部署")
+	}
+
+	// 2. 解析路径组
+	var spec model.PathSpec
+	if req.PathGroupID != nil && *req.PathGroupID != "" {
+		if s.presetRepo == nil {
+			return nil, model.NewBizError(model.ErrSystemInternal, "presetRepo 未注入")
+		}
+		// 通过 repo.db 直接查 path_group（避免再多注入一个 repo）
+		pg, pErr := s.presetRepo.GetPathGroupByIDByID(*req.PathGroupID)
+		if pErr != nil {
+			return nil, model.NewBizError(model.ErrSystemDB, pErr.Error())
+		}
+		if pg == nil {
+			return nil, model.NewBizError(model.ErrPathGroupNotFound, "路径组不存在")
+		}
+		spec = model.PathSpec{
+			SkillPath:  pg.SkillPath,
+			AgentPath:  pg.AgentPath,
+			ConfigPath: pg.ConfigPath,
+			PromptPath: pg.PromptPath,
+		}
+	} else if req.ManualPaths != nil {
+		spec = *req.ManualPaths
+	} else {
+		return nil, model.NewBizError(model.ErrDeployInvalid, "path_group_id 和 manual_paths 不能同时为空")
+	}
+
+	// 3. 校验：preset 包含的每个类型都有对应子路径
+	var missing []string
+	for _, t := range presetTypeOrder {
+		if _, ok := byType[t]; !ok {
+			continue
+		}
+		if typeToPathSpec(t, &spec) == "" {
+			missing = append(missing, t)
+		}
+	}
+	if len(missing) > 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid,
+			fmt.Sprintf("缺少类型对应的子路径: %s", strings.Join(missing, ",")))
+	}
+
+	// 4. 对每个类型部署
+	var created []model.Deployment
+	for _, t := range presetTypeOrder {
+		resources, ok := byType[t]
+		if !ok || len(resources) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(resources))
+		for _, r := range resources {
+			ids = append(ids, r.ID)
+		}
+		deployReq := &model.DeployRequest{
+			ResourceIDs: ids,
+			TargetPath:  typeToPathSpec(t, &spec),
+			Force:       true, // preset 部署默认覆盖同目标
+			Track:       req.Track,
+			PresetID:    presetIDPtr,
+		}
+		dep, dErr := s.Deploy(deployReq)
+		if dErr != nil {
+			return created, dErr
+		}
+		created = append(created, *dep)
+	}
+
+	s.broadcastEvent("preset:deployed", map[string]interface{}{"preset_id": presetID})
+	return created, nil
+}
+
+// RedeployPreset 重新部署整个 preset — 复用已有的 target_path，强制覆盖
+//
+// 流程:
+//  1. 查询该 preset 所有现有 deployment
+//  2. 对每个 deployment，记录其 target_path 和 track，然后撤销
+//  3. 按 target_path 重新部署（保留原 track 设置）
+func (s *DeployService) RedeployPreset(presetID string) ([]model.Deployment, error) {
+	presetIDPtr := &presetID
+
+	// 1. 查询现有部署
+	existing, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid, "该 preset 没有已部署记录,无法重新部署")
+	}
+
+	// 2. 加载当前资源
+	byType, err := s.loadPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+	if len(byType) == 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid, "preset 没有任何资源,无法部署")
+	}
+
+	// 3. 记录每个 target_path 对应的 track 状态，然后撤销所有旧部署
+	type targetInfo struct {
+		track bool
+	}
+	targets := map[string]targetInfo{}
+	for _, dep := range existing {
+		targets[dep.TargetPath] = targetInfo{track: dep.Track == 1}
+		_ = s.Undeploy(dep.ID)
+	}
+
+	// 4. 对每个 target_path，找出匹配的资源类型重新部署
+	var created []model.Deployment
+	for targetPath, info := range targets {
+		for _, t := range presetTypeOrder {
+			resources, ok := byType[t]
+			if !ok || len(resources) == 0 {
+				continue
+			}
+			if !s.resourceTypeMatchesTarget(t, targetPath) {
+				continue
+			}
+			ids := make([]string, 0, len(resources))
+			for _, r := range resources {
+				ids = append(ids, r.ID)
+			}
+			deployReq := &model.DeployRequest{
+				ResourceIDs: ids,
+				TargetPath:  targetPath,
+				Force:       true,
+				Track:       info.track,
+				PresetID:    presetIDPtr,
+			}
+			dep, dErr := s.Deploy(deployReq)
+			if dErr != nil {
+				continue
+			}
+			created = append(created, *dep)
+		}
+	}
+
+	s.broadcastEvent("preset:deployed", map[string]interface{}{"preset_id": presetID})
+	return created, nil
+}
+
+// UndeployPresetDeployment 撤销某次 preset 部署（按 deployment ID）
+func (s *DeployService) UndeployPresetDeployment(presetID, deploymentID string) error {
+	dep, err := s.deployRepo.GetDeploymentByID(deploymentID)
+	if err != nil {
+		return model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	if dep == nil {
+		return model.NewBizError(model.ErrDeployNotFound, "部署不存在")
+	}
+	if dep.PresetID == nil || *dep.PresetID != presetID {
+		return model.NewBizError(model.ErrDeployNotFound, "该部署不属于此 preset")
+	}
+	if err := s.Undeploy(deploymentID); err != nil {
+		return err
+	}
+	s.broadcastEvent("preset:undeployed", map[string]interface{}{
+		"preset_id":     presetID,
+		"deployment_id": deploymentID,
+	})
+	return nil
+}
+
+// ListPresetDeployments 查询某 preset 下所有部署记录
+func (s *DeployService) ListPresetDeployments(presetID string) ([]model.Deployment, error) {
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	return deployments, nil
+}
+
+// groupOfTarget 返回 target_path 命中的路径组（任一子路径相等即命中），未命中返回 nil
+func (s *DeployService) groupOfTarget(groups []model.PathGroup, targetPath string) *model.PathGroup {
+	for i := range groups {
+		g := &groups[i]
+		if g.SkillPath == targetPath || g.AgentPath == targetPath ||
+			g.ConfigPath == targetPath || g.PromptPath == targetPath {
+			return g
+		}
+	}
+	return nil
+}
+
+// typesWithSubPath 返回该路径组配置了子路径的资源类型集合
+func typesWithSubPath(g *model.PathGroup) map[string]bool {
+	set := map[string]bool{}
+	if g.SkillPath != "" {
+		set["skill"] = true
+	}
+	if g.AgentPath != "" {
+		set["agent"] = true
+	}
+	if g.ConfigPath != "" {
+		set["config"] = true
+	}
+	if g.PromptPath != "" {
+		set["prompt"] = true
+	}
+	return set
+}
+
+// ListPresetGroupDrifts 计算 preset 在每个"已部署路径组"下的漂移汇总。
+//
+// 关键点：漂移单位是 (preset, 路径组)，而非单条 deployment。
+// preset 新增了某类型资源（如 prompt），即使该路径组此前没有 prompt 部署记录，
+// 只要路径组配了 prompt 子路径，就算 pending —— 这正是逐 deployment 检测漏掉的场景。
+func (s *DeployService) ListPresetGroupDrifts(presetID string) (map[string]model.PresetGroupDrift, error) {
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return nil, err
+	}
+	result := map[string]model.PresetGroupDrift{}
+	if len(deployments) == 0 {
+		return result, nil
+	}
+	groups, err := s.pathGroupRepo.ListPathGroups()
+	if err != nil {
+		return nil, err
+	}
+	byType, err := s.loadPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 找出该 preset 已部署到的路径组（去重）
+	involved := map[string]*model.PathGroup{}
+	for i := range deployments {
+		if g := s.groupOfTarget(groups, deployments[i].TargetPath); g != nil {
+			involved[g.ID] = g
+		}
+	}
+
+	for gid, g := range involved {
+		// 该路径组下、按类型聚合的已部署资源集
+		deployedByType := map[string]map[string]bool{}
+		for i := range deployments {
+			dep := &deployments[i]
+			tg := s.groupOfTarget(groups, dep.TargetPath)
+			if tg == nil || tg.ID != gid {
+				continue
+			}
+			items, _ := s.deployRepo.GetDeploymentItems(dep.ID)
+			for _, it := range items {
+				r, rErr := s.resourceRepo.GetResourceByID(it.ResourceID)
+				rtype := ""
+				if rErr == nil && r != nil {
+					rtype = r.Type
+				}
+				if deployedByType[rtype] == nil {
+					deployedByType[rtype] = map[string]bool{}
+				}
+				deployedByType[rtype][it.ResourceID] = true
+			}
+		}
+
+		subTypes := typesWithSubPath(g)
+		pending, stale := 0, 0
+		// 该路径组配了子路径的每种类型，逐一比对
+		for rtype := range subTypes {
+			expected := map[string]bool{}
+			for _, r := range byType[rtype] {
+				expected[r.ID] = true
+			}
+			deployed := deployedByType[rtype]
+			for rid := range expected {
+				if !deployed[rid] {
+					pending++
+				}
+			}
+			for rid := range deployed {
+				if !expected[rid] {
+					stale++
+				}
+			}
+		}
+		result[gid] = model.PresetGroupDrift{
+			GroupID:   gid,
+			GroupName: g.Name,
+			Pending:   pending,
+			Stale:     stale,
+		}
+	}
+	return result, nil
+}
+
+// GetPresetGroupStatus 返回 preset 在指定路径组下的完整部署状态（部署管理弹窗用）：
+// 每个"该路径组配了子路径的类型"一行 target，列出应部署资源 + 已部署/新增/残留状态。
+func (s *DeployService) GetPresetGroupStatus(presetID, groupID string) (*model.PresetGroupStatus, error) {
+	groups, err := s.pathGroupRepo.ListPathGroups()
+	if err != nil {
+		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	var g *model.PathGroup
+	for i := range groups {
+		if groups[i].ID == groupID {
+			g = &groups[i]
+			break
+		}
+	}
+	if g == nil {
+		return nil, model.NewBizError(model.ErrPathGroupNotFound, "路径组不存在")
+	}
+
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	byType, err := s.loadPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 该路径组下、每种类型对应的 deployment（若已部署）
+	depByType := map[string]*model.Deployment{}
+	for i := range deployments {
+		dep := &deployments[i]
+		tg := s.groupOfTarget(groups, dep.TargetPath)
+		if tg == nil || tg.ID != groupID {
+			continue
+		}
+		// target_path 等于路径组的哪个子路径 → 决定类型
+		switch dep.TargetPath {
+		case g.SkillPath:
+			depByType["skill"] = dep
+		case g.AgentPath:
+			depByType["agent"] = dep
+		case g.ConfigPath:
+			depByType["config"] = dep
+		case g.PromptPath:
+			depByType["prompt"] = dep
+		}
+	}
+
+	status := &model.PresetGroupStatus{GroupID: g.ID, GroupName: g.Name}
+	subTypes := typesWithSubPath(g)
+	for _, rtype := range []string{"skill", "agent", "config", "prompt"} {
+		if !subTypes[rtype] {
+			continue
+		}
+		targetPath := typeToPathSpec(rtype, &model.PathSpec{
+			SkillPath: g.SkillPath, AgentPath: g.AgentPath,
+			ConfigPath: g.ConfigPath, PromptPath: g.PromptPath,
+		})
+		ts := model.PresetTargetStatus{Type: rtype, TargetPath: targetPath}
+
+		deployedSet := map[string]bool{}
+		if dep := depByType[rtype]; dep != nil {
+			ts.DeploymentID = dep.ID
+			ts.Track = dep.Track
+			ts.DeployType = dep.DeployType
+			ts.HasDeployment = true
+			items, _ := s.deployRepo.GetDeploymentItems(dep.ID)
+			for _, it := range items {
+				deployedSet[it.ResourceID] = true
+			}
+		}
+
+		expected := map[string]model.Resource{}
+		for _, r := range byType[rtype] {
+			expected[r.ID] = r
+		}
+		// 应部署资源：已部署 / 新增未部署
+		for _, r := range byType[rtype] {
+			deployed := deployedSet[r.ID]
+			ts.Resources = append(ts.Resources, model.DeployResourceStatus{
+				ResourceID:   r.ID,
+				ResourceName: r.Name,
+				Type:         r.Type,
+				Deployed:     deployed,
+				Stale:        false,
+			})
+			if !deployed {
+				status.Pending++
+			}
+		}
+		// 残留资源：已部署但已不在 preset
+		for rid := range deployedSet {
+			if _, ok := expected[rid]; ok {
+				continue
+			}
+			name, rtp := rid, rtype
+			if r, rErr := s.resourceRepo.GetResourceByID(rid); rErr == nil && r != nil {
+				name = r.Name
+				rtp = r.Type
+			}
+			ts.Resources = append(ts.Resources, model.DeployResourceStatus{
+				ResourceID:   rid,
+				ResourceName: name,
+				Type:         rtp,
+				Deployed:     true,
+				Stale:        true,
+			})
+			status.Stale++
+		}
+		if ts.Resources == nil {
+			ts.Resources = []model.DeployResourceStatus{}
+		}
+		status.Targets = append(status.Targets, ts)
+	}
+	if status.Targets == nil {
+		status.Targets = []model.PresetTargetStatus{}
+	}
+	return status, nil
+}
+
+// RedeployPresetGroup 将 preset 以最新全量资源重新部署到指定路径组：
+// 撤销该组下旧部署，再按"路径组配了子路径 且 preset 有该类型资源"的组合全部重建。
+// 这能补齐部署后新增的类型（如新加的 prompt）。
+func (s *DeployService) RedeployPresetGroup(presetID, groupID string) ([]model.Deployment, error) {
+	presetIDPtr := &presetID
+	groups, err := s.pathGroupRepo.ListPathGroups()
+	if err != nil {
+		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	var g *model.PathGroup
+	for i := range groups {
+		if groups[i].ID == groupID {
+			g = &groups[i]
+			break
+		}
+	}
+	if g == nil {
+		return nil, model.NewBizError(model.ErrPathGroupNotFound, "路径组不存在")
+	}
+
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	byType, err := s.loadPresetResources(presetID)
+	if err != nil {
+		return nil, err
+	}
+
+	// 记录原 track（按类型），并撤销该组下所有旧部署
+	trackByType := map[string]bool{}
+	for i := range deployments {
+		dep := &deployments[i]
+		tg := s.groupOfTarget(groups, dep.TargetPath)
+		if tg == nil || tg.ID != groupID {
+			continue
+		}
+		switch dep.TargetPath {
+		case g.SkillPath:
+			trackByType["skill"] = dep.Track == 1
+		case g.AgentPath:
+			trackByType["agent"] = dep.Track == 1
+		case g.ConfigPath:
+			trackByType["config"] = dep.Track == 1
+		case g.PromptPath:
+			trackByType["prompt"] = dep.Track == 1
+		}
+		_ = s.Undeploy(dep.ID)
+	}
+
+	spec := model.PathSpec{
+		SkillPath: g.SkillPath, AgentPath: g.AgentPath,
+		ConfigPath: g.ConfigPath, PromptPath: g.PromptPath,
+	}
+	subTypes := typesWithSubPath(g)
+	var created []model.Deployment
+	for _, t := range presetTypeOrder {
+		if !subTypes[t] {
+			continue
+		}
+		resources := byType[t]
+		if len(resources) == 0 {
+			continue
+		}
+		ids := make([]string, 0, len(resources))
+		for _, r := range resources {
+			ids = append(ids, r.ID)
+		}
+		dep, dErr := s.Deploy(&model.DeployRequest{
+			ResourceIDs: ids,
+			TargetPath:  typeToPathSpec(t, &spec),
+			Force:       true,
+			Track:       trackByType[t], // 沿用原 track；新类型默认 false(静态)
+			PresetID:    presetIDPtr,
+		})
+		if dErr != nil {
+			continue
+		}
+		created = append(created, *dep)
+	}
+
+	s.broadcastEvent("preset:deployed", map[string]interface{}{"preset_id": presetID})
+	return created, nil
+}
+
+// UndeployAllPreset 撤销 preset 下所有部署（删除 preset 前调用）
+func (s *DeployService) UndeployAllPreset(presetID string) error {
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	for _, dep := range deployments {
+		if err := s.Undeploy(dep.ID); err != nil {
+			// 继续尝试撤销其余
+			continue
+		}
+	}
+	return nil
+}
+
+// SyncPresetDeployments preset 资源变更后,对每个 track=1 的部署重新同步目标内容
+//
+// 实现:
+//  1. 撤销每个 preset 部署的"过时"链接（资源已不在 preset 中）
+//  2. 补齐"新增"资源的链接
+// 仅对 track=1 的 deployment 生效；static 部署不动
+func (s *DeployService) SyncPresetDeployments(presetID string) {
+	deployments, err := s.deployRepo.ListDeploymentsByPreset(presetID)
+	if err != nil {
+		return
+	}
+	byType, _ := s.loadPresetResources(presetID)
+	currentIDs := map[string]bool{}
+	for _, rs := range byType {
+		for _, r := range rs {
+			currentIDs[r.ID] = true
+		}
+	}
+
+	for _, dep := range deployments {
+		// 静态部署不跟踪同步
+		if dep.Track != 1 {
+			continue
+		}
+		// 取该 deployment 当前所有 item
+		items, err := s.deployRepo.GetDeploymentItems(dep.ID)
+		if err != nil {
+			continue
+		}
+		// 撤销已不在 preset 的 item
+		for _, item := range items {
+			if !currentIDs[item.ResourceID] {
+				s.UndeployResourceFromTarget(item.ResourceID, dep.ID, dep.TargetPath, dep.DeployType)
+			}
+		}
+		// 补齐新增资源
+		for _, rs := range byType {
+			for _, r := range rs {
+				// 判断该资源类型与该 deployment 目标类型一致
+				if !s.resourceTypeMatchesTarget(r.Type, dep.TargetPath) {
+					continue
+				}
+				s.DeploySingleResourceToTarget(dep.ID, &r, dep.TargetPath)
+			}
+		}
+	}
+
+	s.broadcastEvent("preset:resource_changed", map[string]interface{}{"preset_id": presetID})
+}
+
+// resourceTypeMatchesTarget 粗略判断资源类型与 deployment 目标路径是否匹配
+// skill/agent -> 目标是目录(无后缀)；config -> 配置文件后缀；prompt -> .md
+func (s *DeployService) resourceTypeMatchesTarget(rtype, target string) bool {
+	switch rtype {
+	case "skill", "agent":
+		return filepath.Ext(target) == ""
+	case "config":
+		return util.IsConfigFile(target)
+	case "prompt":
+		return util.IsPromptFile(target)
+	}
+	return false
 }

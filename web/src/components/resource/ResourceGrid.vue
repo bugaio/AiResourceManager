@@ -12,6 +12,7 @@ const emit = defineEmits<{
   (e: 'deploy', resource: Resource): void
   (e: 'delete', resource: Resource): void
   (e: 'removeFromGroup', resource: Resource): void
+  (e: 'viewLinks', resource: Resource): void
 }>()
 </script>
 
@@ -26,6 +27,7 @@ const emit = defineEmits<{
       @edit-content="emit('editContent', $event)"
       @deploy="emit('deploy', $event)"
       @remove-from-group="emit('removeFromGroup', $event)"
+      @view-links="emit('viewLinks', $event)"
       @delete="emit('delete', $event)"
     />
   </div>

@@ -6,12 +6,15 @@ import SyncDeployDialog from '@/components/deploy/SyncDeployDialog.vue'
 import { useUiStore } from '@/stores/ui'
 import { getResource, getContent, updateContent } from '@/api/resource'
 import { getResourceDeployTargets } from '@/api/deploy'
+import { checkPresetConfigConflicts, type PresetConfigConflict } from '@/api/preset'
+import ConfigConflictDialog from '@/components/preset/ConfigConflictDialog.vue'
 import type { Resource } from '@/types/resource'
 
 /** 编辑器抽屉组件 - 右侧滑出，支持拖拽调宽 */
 const props = defineProps<{
   visible: boolean
   resourceId: string
+  readonly?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -33,6 +36,9 @@ const loading = ref(false)
 const saving = ref(false)
 // 同步弹窗状态
 const syncDialogVisible = ref(false)
+// Config 冲突弹窗
+const conflictVisible = ref(false)
+const conflictList = ref<PresetConfigConflict[]>([])
 // Monaco 编辑器组件引用（用于格式化）
 const monacoRef = ref<InstanceType<typeof MonacoEditor>>()
 // 是否为 Config 类型
@@ -84,6 +90,7 @@ watch(() => props.visible, async (val) => {
 
 /** 保存内容 */
 async function handleSave() {
+  if (props.readonly) return
   if (!props.resourceId || !dirty.value) return
   saving.value = true
   try {
@@ -91,6 +98,25 @@ async function handleSave() {
     originalContent.value = content.value
     ElMessage.success('保存成功')
     emit('saved')
+
+    // 私有 config 保存后：检测是否与所属 preset 的其他 config 冲突
+    //   owner_preset_id 非空 = preset 私有资源；后端据 candidate 自身 ID 读取刚写入的内容比对
+    if (resource.value?.type === 'config' && resource.value?.owner_preset_id) {
+      try {
+        const res = await checkPresetConfigConflicts(
+          resource.value.owner_preset_id,
+          [props.resourceId],
+        )
+        if (res.has_conflict) {
+          conflictList.value = res.conflicts
+          conflictVisible.value = true
+          saving.value = false
+          return // 保持编辑器打开，让用户重新编辑
+        }
+      } catch {
+        // 冲突检测失败不阻断保存流程
+      }
+    }
 
     // Config / Prompt 类型：检查是否有已部署路径，有则询问同步
     if (resource.value?.type === 'config' || resource.value?.type === 'prompt') {
@@ -110,6 +136,9 @@ async function handleSave() {
           emit('update:visible', false)
         }
       }
+    } else {
+      // Skill / SubAgent 等类型：保存后直接关闭编辑器
+      emit('update:visible', false)
     }
   } catch (e: any) {
     ElMessage.error(e.message || '保存失败')
@@ -125,12 +154,16 @@ function handleFormat() {
 
 /** 同步完成后关闭编辑器 */
 function handleSynced() {
+  // 同步「重新部署」会删除旧 deployment 并用新 ID 重建,
+  // 必须通知父级刷新 preset 列表,否则侧边栏仍持有失效的旧 deployment ID,
+  // 导致后续「移除」按失效 ID 调用 undeploy 而全部失败。
+  emit('saved')
   emit('update:visible', false)
 }
 
 /** 关闭抽屉（检查dirty状态） */
 async function handleClose() {
-  if (dirty.value) {
+  if (!props.readonly && dirty.value) {
     try {
       await ElMessageBox.confirm('内容未保存，确定关闭？', '提示', {
         confirmButtonText: '确定',
@@ -147,6 +180,7 @@ async function handleClose() {
 /** 键盘快捷键：Ctrl+S / Cmd+S 保存 */
 function handleKeydown(e: KeyboardEvent) {
   if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+    if (props.readonly) return
     e.preventDefault()
     handleSave()
   }
@@ -218,7 +252,13 @@ onUnmounted(() => {
                   {{ resource?.name || '加载中...' }}
                 </h3>
                 <span
-                  v-if="dirty"
+                  v-if="readonly"
+                  class="text-xs px-1.5 py-0.5 rounded bg-gray-100 text-gray-500 dark:bg-gray-700 dark:text-gray-300"
+                >
+                  只读
+                </span>
+                <span
+                  v-else-if="dirty"
                   class="text-xs px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300"
                 >
                   未保存
@@ -226,13 +266,14 @@ onUnmounted(() => {
               </div>
               <div class="flex items-center gap-2">
                 <el-button
-                  v-if="isConfig"
+                  v-if="isConfig && !readonly"
                   size="small"
                   @click="handleFormat"
                 >
                   格式化
                 </el-button>
                 <el-button
+                  v-if="!readonly"
                   type="primary"
                   size="small"
                   :loading="saving"
@@ -256,6 +297,7 @@ onUnmounted(() => {
                 v-model="content"
                 :language="editorLanguage"
                 :theme="editorTheme"
+                :readonly="readonly"
               />
             </div>
           </div>
@@ -269,6 +311,13 @@ onUnmounted(() => {
     v-model:visible="syncDialogVisible"
     :resource-id="resourceId"
     @synced="handleSynced"
+  />
+
+  <!-- 私有 config 冲突提示弹窗 -->
+  <ConfigConflictDialog
+    v-model:visible="conflictVisible"
+    :conflicts="conflictList"
+    hint="当前 config 与同 Preset 下已有 config 冲突，请修改后重新保存"
   />
 </template>
 

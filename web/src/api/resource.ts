@@ -6,6 +6,8 @@ interface FetchResourcesParams {
   type: ResourceType
   search?: string
   group_id?: string
+  /** 私有资源归属过滤：传 preset_id 仅查该 preset 私有；传 "" 不过滤；不传 → 后端默认只返回全局 */
+  owner_preset_id?: string
   page: number
   page_size: number
 }
@@ -45,9 +47,18 @@ export function updateContent(id: string, content: string): Promise<void> {
   return request.put(`/resources/${id}/content`, { content })
 }
 
-/** 删除单个资源 */
-export function deleteResource(id: string, confirm?: boolean): Promise<unknown> {
-  return request.delete(`/resources/${id}`, { params: { confirm } })
+/** 删除单个资源
+ * @param confirm true=已确认部署提示
+ * @param unlink  true=级联解除所有 preset 关联后再删
+ */
+export function deleteResource(
+  id: string,
+  options?: { confirm?: boolean; unlink?: boolean },
+): Promise<unknown> {
+  const params: Record<string, boolean> = {}
+  if (options?.confirm) params.confirm = true
+  if (options?.unlink) params.unlink = true
+  return request.delete(`/resources/${id}`, { params })
 }
 
 /** 批量删除资源 */

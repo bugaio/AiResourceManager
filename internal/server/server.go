@@ -14,17 +14,19 @@ import (
 
 // Server HTTP 服务结构体，持有路由和依赖
 type Server struct {
-	router          *gin.Engine
-	cfg             *config.Config
-	healthHandler   *handler.HealthHandler
-	wsHandler       *handler.WSHandler
-	resourceHandler *handler.ResourceHandler
-	groupHandler    *handler.GroupHandler
-	aliasHandler    *handler.AliasHandler
-	deployHandler   *handler.DeployHandler
-	dataHandler     *handler.DataHandler
-	logger          *zap.Logger
-	staticFS        fs.FS // 嵌入的前端静态资源文件系统
+	router            *gin.Engine
+	cfg               *config.Config
+	healthHandler     *handler.HealthHandler
+	wsHandler         *handler.WSHandler
+	resourceHandler   *handler.ResourceHandler
+	groupHandler      *handler.GroupHandler
+	aliasHandler      *handler.AliasHandler
+	deployHandler     *handler.DeployHandler
+	dataHandler       *handler.DataHandler
+	presetHandler     *handler.PresetHandler
+	pathGroupHandler  *handler.PathGroupHandler
+	logger            *zap.Logger
+	staticFS          fs.FS // 嵌入的前端静态资源文件系统
 }
 
 // New 创建并配置 HTTP 服务实例
@@ -36,10 +38,12 @@ type Server struct {
 // 参数 aliasHandler: 路径别名处理器
 // 参数 deployHandler: 部署管理处理器
 // 参数 dataHandler: 数据导入导出处理器
+// 参数 presetHandler: Preset 处理器
+// 参数 pathGroupHandler: 路径组处理器
 // 参数 logger: 日志实例
 // 参数 staticFS: 前端静态资源文件系统，为 nil 时不提供静态文件服务
 // 返回: 配置完成的 Server 指针
-func New(cfg *config.Config, healthHandler *handler.HealthHandler, wsHandler *handler.WSHandler, resourceHandler *handler.ResourceHandler, groupHandler *handler.GroupHandler, aliasHandler *handler.AliasHandler, deployHandler *handler.DeployHandler, dataHandler *handler.DataHandler, logger *zap.Logger, staticFS fs.FS) *Server {
+func New(cfg *config.Config, healthHandler *handler.HealthHandler, wsHandler *handler.WSHandler, resourceHandler *handler.ResourceHandler, groupHandler *handler.GroupHandler, aliasHandler *handler.AliasHandler, deployHandler *handler.DeployHandler, dataHandler *handler.DataHandler, presetHandler *handler.PresetHandler, pathGroupHandler *handler.PathGroupHandler, logger *zap.Logger, staticFS fs.FS) *Server {
 	gin.SetMode(gin.ReleaseMode)
 	router := gin.New()
 	router.Use(gin.Recovery())
@@ -47,17 +51,19 @@ func New(cfg *config.Config, healthHandler *handler.HealthHandler, wsHandler *ha
 	router.Use(LoggerMiddleware(logger))
 
 	s := &Server{
-		router:          router,
-		cfg:             cfg,
-		healthHandler:   healthHandler,
-		wsHandler:       wsHandler,
-		resourceHandler: resourceHandler,
-		groupHandler:    groupHandler,
-		aliasHandler:    aliasHandler,
-		deployHandler:   deployHandler,
-		dataHandler:     dataHandler,
-		logger:          logger,
-		staticFS:        staticFS,
+		router:           router,
+		cfg:              cfg,
+		healthHandler:    healthHandler,
+		wsHandler:        wsHandler,
+		resourceHandler:  resourceHandler,
+		groupHandler:     groupHandler,
+		aliasHandler:     aliasHandler,
+		deployHandler:    deployHandler,
+		dataHandler:      dataHandler,
+		presetHandler:    presetHandler,
+		pathGroupHandler: pathGroupHandler,
+		logger:           logger,
+		staticFS:         staticFS,
 	}
 
 	s.registerRoutes()
@@ -91,6 +97,12 @@ func (s *Server) registerRoutes() {
 
 		// 数据导入导出路由
 		handler.RegisterDataRoutes(v1, s.dataHandler)
+
+		// Preset 路由
+		handler.RegisterPresetRoutes(v1, s.presetHandler)
+
+		// 路径组路由
+		handler.RegisterPathGroupRoutes(v1, s.pathGroupHandler)
 	}
 }
 

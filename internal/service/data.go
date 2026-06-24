@@ -491,6 +491,16 @@ func extractUUIDFromPath(path, baseDir string) string {
 		// prompts/{uuid}.md
 		name := parts[1]
 		return strings.TrimSuffix(name, ".md")
+	case "presets":
+		// presets/{presetID}/{uuid}[/...] (skill 目录) 或 presets/{presetID}/{uuid}.ext (agent/config/prompt 文件)
+		if len(parts) < 3 {
+			return ""
+		}
+		name := parts[2]
+		if ext := filepath.Ext(name); ext != "" {
+			return strings.TrimSuffix(name, ext)
+		}
+		return name
 	default:
 		return ""
 	}

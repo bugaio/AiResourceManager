@@ -1,15 +1,33 @@
 // Package model errors.go 定义业务错误码和错误类型
-// 错误码分段：1000-1999 资源，2000-2999 分组，3000-3999 部署，4000-4999 别名，5000-5999 数据，9000-9999 系统
+// 错误码分段：1000-1999 资源，2000-2999 分组，3000-3999 部署，4000-4999 别名，
+// 5000-5999 数据，1100-1199 Preset，1200-1299 PathGroup，9000-9999 系统
 package model
 
 import "fmt"
 
 // 资源相关错误码 (1000-1999)
 const (
-	ErrResourceNotFound    = 1001 // 资源不存在
-	ErrResourceExists      = 1002 // 资源名称重复
-	ErrResourceFileIO      = 1003 // 文件读写错误
-	ErrResourceHasDeploy   = 1004 // 存在关联部署，需确认删除
+	ErrResourceNotFound       = 1001 // 资源不存在
+	ErrResourceExists         = 1002 // 资源名称重复
+	ErrResourceFileIO         = 1003 // 文件读写错误
+	ErrResourceHasDeploy      = 1004 // 存在关联部署，需确认删除
+	ErrResourceLockedByPreset = 1005 // 资源被 preset 管理，需 unlink=true 才能删除
+	ErrPrivateResourceCross   = 1106 // 私有资源不能被其他 preset 引用
+)
+
+// Preset 相关错误码 (1100-1199)
+const (
+	ErrPresetNotFound      = 1101 // preset 不存在
+	ErrPresetDuplicateName = 1102 // preset 名称重复
+	ErrPresetInvalid       = 1103 // preset 参数无效
+)
+
+// PathGroup 相关错误码 (1200-1299)
+const (
+	ErrPathGroupNotFound      = 1201 // path_group 不存在
+	ErrPathGroupDuplicateName = 1202 // path_group 名称重复
+	ErrPathGroupEmpty         = 1203 // 4 个子路径全空
+	ErrPathGroupBadFormat     = 1204 // 子路径格式不符合 type 约束
 )
 
 // 参数校验错误码

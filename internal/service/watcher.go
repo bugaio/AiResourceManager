@@ -21,6 +21,7 @@ type WatcherService struct {
 	watcher    *fsnotify.Watcher
 	hub        *Hub
 	repo       *repo.ResourceRepo
+	presetRepo *repo.PresetRepo
 	baseDir    string
 	lastEvents map[string]time.Time // 去重: path → 最后处理时间
 	suppressed map[string]time.Time // 抑制: uuid → 抑制截止时间(程序自己发起的删除)
@@ -64,6 +65,11 @@ func (w *WatcherService) SuppressUUID(uuid string, ttl time.Duration) {
 	w.mu.Unlock()
 }
 
+// SetPresetRepo 注入 preset 数据仓库（用于资源变更时推送 preset:resource_changed）
+func (w *WatcherService) SetPresetRepo(r *repo.PresetRepo) {
+	w.presetRepo = r
+}
+
 // isSuppressed 检查 UUID 是否仍在抑制窗口内,顺便清理过期项
 func (w *WatcherService) isSuppressed(uuid string) bool {
 	w.mu.Lock()
@@ -95,6 +101,7 @@ func (w *WatcherService) Start() error {
 		filepath.Join(w.baseDir, "agents"),
 		filepath.Join(w.baseDir, "configs"),
 		filepath.Join(w.baseDir, "prompts"),
+		filepath.Join(w.baseDir, "presets"),
 	}
 
 	for _, dir := range watchDirs {
@@ -233,6 +240,7 @@ func (w *WatcherService) handleEvent(event fsnotify.Event) {
 }
 
 // broadcast 向所有 WebSocket 客户端广播事件
+// 若资源属于某个 preset（私有或被关联），同时推送 preset:resource_changed
 func (w *WatcherService) broadcast(event WatcherEvent) {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -240,4 +248,19 @@ func (w *WatcherService) broadcast(event WatcherEvent) {
 		return
 	}
 	w.hub.Broadcast(data)
+
+	// 命中私有资源或被 preset 关联的资源时,补推 preset:resource_changed
+	if w.presetRepo != nil && event.Data != nil {
+		if m, ok := event.Data.(map[string]interface{}); ok {
+			if uuid, ok := m["uuid"].(string); ok && uuid != "" {
+				if pid, pErr := w.presetRepo.OwnerPresetIDOf(uuid); pErr == nil && pid != "" {
+					msg, _ := json.Marshal(map[string]interface{}{
+						"type": "preset:resource_changed",
+						"data": map[string]interface{}{"preset_id": pid, "resource_id": uuid},
+					})
+					w.hub.Broadcast(msg)
+				}
+			}
+		}
+	}
 }

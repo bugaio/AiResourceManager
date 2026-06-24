@@ -31,9 +31,9 @@ func (repo *ResourceRepo) InsertResource(r *model.Resource) error {
 	defer repo.db.Unlock()
 
 	_, err := repo.db.Conn.Exec(
-		`INSERT INTO resource (id, name, type, path, description, metadata, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		r.ID, r.Name, r.Type, r.Path, r.Description, r.Metadata, r.CreatedAt, r.UpdatedAt,
+		`INSERT INTO resource (id, name, type, path, description, metadata, created_at, updated_at, owner_preset_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		r.ID, r.Name, r.Type, r.Path, r.Description, r.Metadata, r.CreatedAt, r.UpdatedAt, r.OwnerPresetID,
 	)
 	if err != nil {
 		return fmt.Errorf("插入资源失败: %w", err)
@@ -50,9 +50,9 @@ func (repo *ResourceRepo) GetResourceByID(id string) (*model.Resource, error) {
 
 	r := &model.Resource{}
 	err := repo.db.Conn.QueryRow(
-		`SELECT id, name, type, path, description, metadata, created_at, updated_at
+		`SELECT id, name, type, path, description, metadata, created_at, updated_at, owner_preset_id
 		 FROM resource WHERE id = ?`, id,
-	).Scan(&r.ID, &r.Name, &r.Type, &r.Path, &r.Description, &r.Metadata, &r.CreatedAt, &r.UpdatedAt)
+	).Scan(&r.ID, &r.Name, &r.Type, &r.Path, &r.Description, &r.Metadata, &r.CreatedAt, &r.UpdatedAt, &r.OwnerPresetID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -85,14 +85,22 @@ func (repo *ResourceRepo) CheckNameExists(resourceType, name, excludeID string) 
 	return count > 0, nil
 }
 
+// OwnerPresetNone 哨兵值：在 ListResources 中表示 "仅查全局资源" (owner_preset_id IS NULL)
+const OwnerPresetNone = "__none__"
+
 // ListResources 分页查询资源列表
 // 参数 resourceType: 资源类型筛选
 // 参数 search: 名称模糊搜索关键词
 // 参数 groupID: 分组 ID，"0" 或空表示不筛选
+// 参数 ownerPresetID:
+//   - OwnerPresetNone ("__none__")（默认）: 仅返回全局资源（owner_preset_id IS NULL）
+//   - 具体 preset id: 仅返回该 preset 的私有资源
+//   - ""（空串）: 不按 owner_preset_id 过滤（内部全量调用使用）
+//
 // 参数 page: 页码（从 1 开始）
 // 参数 pageSize: 每页数量
 // 返回: 资源列表、总数、错误信息
-func (repo *ResourceRepo) ListResources(resourceType, search, groupID string, page, pageSize int) ([]model.Resource, int, error) {
+func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPresetID string, page, pageSize int) ([]model.Resource, int, error) {
 	repo.db.RLock()
 	defer repo.db.RUnlock()
 
@@ -114,6 +122,15 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID string, pa
 		conditions = append(conditions, "gr.group_id = ?")
 		args = append(args, groupID)
 	}
+	switch ownerPresetID {
+	case "":
+		// 不过滤
+	case OwnerPresetNone:
+		conditions = append(conditions, "r.owner_preset_id IS NULL")
+	default:
+		conditions = append(conditions, "r.owner_preset_id = ?")
+		args = append(args, ownerPresetID)
+	}
 
 	whereClause := ""
 	if len(conditions) > 0 {
@@ -129,7 +146,7 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID string, pa
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	listQuery := "SELECT r.id, r.name, r.type, r.path, r.description, r.metadata, r.created_at, r.updated_at " +
+	listQuery := "SELECT r.id, r.name, r.type, r.path, r.description, r.metadata, r.created_at, r.updated_at, r.owner_preset_id " +
 		fromClause + whereClause + " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
 	listArgs := append(args, pageSize, offset)
 
@@ -142,7 +159,7 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID string, pa
 	var list []model.Resource
 	for rows.Next() {
 		var r model.Resource
-		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Path, &r.Description, &r.Metadata, &r.CreatedAt, &r.UpdatedAt); err != nil {
+		if err := rows.Scan(&r.ID, &r.Name, &r.Type, &r.Path, &r.Description, &r.Metadata, &r.CreatedAt, &r.UpdatedAt, &r.OwnerPresetID); err != nil {
 			return nil, 0, fmt.Errorf("扫描资源行失败: %w", err)
 		}
 		list = append(list, r)

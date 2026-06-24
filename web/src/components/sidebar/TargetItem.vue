@@ -59,6 +59,61 @@ const currentTypeDeployments = computed(() => {
   return props.targetInfo.deployments.filter(d => d.deploy_type === currentDeployType.value)
 })
 
+/** 是否有跟踪分组部署（track=1） */
+const hasTracking = computed(() =>
+  props.targetInfo.deployments.some(d => d.track === 1),
+)
+
+/** 是否存在 broken 子项 */
+const hasBroken = computed(() =>
+  allItems.value.some(i => i.status === 'broken'),
+)
+
+/**
+ * 卡片状态分类（决定配色，沿用 PresetSidebar 语义）：
+ *   - broken   有失效部署项        → 红（最需关注）
+ *   - alias    有别名(无 broken)    → 紫（保留别名语义）
+ *   - tracking 有跟踪部署           → 蓝（柔和）
+ *   - normal   普通已部署正常       → 绿
+ */
+type TargetState = 'broken' | 'alias' | 'tracking' | 'normal'
+const targetState = computed<TargetState>(() => {
+  if (hasBroken.value) return 'broken'
+  if (matchedAlias.value) return 'alias'
+  if (hasTracking.value) return 'tracking'
+  return 'normal'
+})
+
+/** 卡片 ring（边框）颜色 */
+const ringClass = computed(() => {
+  switch (targetState.value) {
+    case 'broken': return 'ring-rose-300/80 dark:ring-rose-800/60'
+    case 'alias': return 'ring-purple-200/70 dark:ring-purple-900/40'
+    case 'tracking': return 'ring-sky-200/80 dark:ring-sky-900/50'
+    default: return 'ring-green-200/70 dark:ring-green-900/40'
+  }
+})
+
+/** 卡片背景色 */
+const bgClass = computed(() => {
+  switch (targetState.value) {
+    case 'broken': return 'bg-rose-50/70 dark:bg-rose-950/20'
+    case 'alias': return 'bg-purple-50/50 dark:bg-purple-900/20'
+    case 'tracking': return 'bg-sky-50/60 dark:bg-sky-950/20'
+    default: return 'bg-green-50/50 dark:bg-green-950/15'
+  }
+})
+
+/** 左侧状态色条颜色 */
+const barClass = computed(() => {
+  switch (targetState.value) {
+    case 'broken': return 'bg-rose-400 dark:bg-rose-500'
+    case 'alias': return 'bg-purple-400 dark:bg-purple-500'
+    case 'tracking': return 'bg-sky-400 dark:bg-sky-500'
+    default: return 'bg-green-400 dark:bg-green-500'
+  }
+})
+
 /** 检查该目标下所有部署健康状态 */
 async function handleCheck() {
   checking.value = true
@@ -203,9 +258,15 @@ async function handleClean(deploymentId: string, itemId: string, status: string)
 </script>
 
 <template>
-  <div>
+  <div
+    class="relative rounded-lg shadow-sm ring-1 overflow-hidden transition-all hover:shadow-md"
+    :class="[ringClass, bgClass]"
+  >
+    <!-- 左侧状态色条：broken=红 / 别名=紫 / 跟踪=蓝 / 正常=绿 -->
+    <span class="absolute left-0 top-0 bottom-0 w-1" :class="barClass"></span>
+
     <!-- 目标路径行 -->
-    <div class="flex items-center gap-1 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-800 group">
+    <div class="flex items-center gap-1 pl-3 pr-2 py-2 hover:bg-black/[0.02] dark:hover:bg-white/[0.03] group">
       <!-- 展开箭头 -->
       <svg
         xmlns="http://www.w3.org/2000/svg"
@@ -254,7 +315,7 @@ async function handleClean(deploymentId: string, itemId: string, status: string)
     </div>
 
     <!-- 展开：资源列表 -->
-    <div v-if="expanded" class="ml-5 pl-2 border-l border-gray-200 dark:border-gray-700">
+    <div v-if="expanded" class="px-2 pb-2 pt-0.5 ml-3 pl-2 border-l border-gray-200/70 dark:border-gray-700/60">
       <!-- 有别名时显示完整路径 -->
       <div v-if="matchedAlias" class="text-[10px] text-gray-400 dark:text-gray-500 truncate py-0.5">
         {{ targetInfo.target_path }}

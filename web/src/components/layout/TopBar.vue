@@ -1,11 +1,16 @@
 <script setup lang="ts">
+import { computed } from 'vue'
 import { useUiStore, type ResourceType } from '@/stores/ui'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { Sunny, Moon, Setting } from '@element-plus/icons-vue'
 
 /** 顶部导航栏：类型切换 + 主题切换 + 设置菜单 */
 const uiStore = useUiStore()
 const router = useRouter()
+const route = useRoute()
+
+/** Preset 路由激活态 */
+const presetActive = computed(() => route.path.startsWith('/presets'))
 
 /** 资源类型选项 */
 const typeOptions: { label: string; value: ResourceType }[] = [
@@ -23,6 +28,14 @@ function handleCommand(command: string) {
     router.push('/data')
   }
 }
+
+/** 类型切换：若当前在 /presets 先跳回 /resources，再 setType */
+async function handleTypeClick(type: ResourceType) {
+  if (presetActive.value) {
+    await router.push('/resources')
+  }
+  uiStore.setType(type)
+}
 </script>
 
 <template>
@@ -34,23 +47,36 @@ function handleCommand(command: string) {
       AiResourceManager
     </div>
 
-    <!-- 中间：类型切换按钮组 -->
-    <div class="flex-1 flex justify-center">
+    <!-- 中间：类型切换按钮组 + Preset 入口 -->
+    <div class="flex-1 flex justify-center items-center">
       <div class="inline-flex rounded-md border border-gray-300 dark:border-gray-600 overflow-hidden">
         <button
           v-for="opt in typeOptions"
           :key="opt.value"
           class="px-4 py-1.5 text-sm font-medium transition-colors"
           :class="
-            uiStore.currentType === opt.value
+            !presetActive && uiStore.currentType === opt.value
               ? 'bg-blue-500 text-white'
               : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600'
           "
-          @click="uiStore.setType(opt.value)"
+          @click="handleTypeClick(opt.value)"
         >
           {{ opt.label }}
         </button>
       </div>
+
+      <!-- Preset 入口（紧挨类型切换组右侧，间隔一点） -->
+      <button
+        class="ml-3 px-3 py-1.5 rounded-md text-sm font-medium transition-colors"
+        :class="
+          presetActive
+            ? 'bg-blue-100 text-blue-700 dark:bg-blue-900/40 dark:text-blue-300'
+            : 'text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700'
+        "
+        @click="router.push('/presets')"
+      >
+        Preset
+      </button>
     </div>
 
     <!-- 右侧：主题切换 + 设置 -->

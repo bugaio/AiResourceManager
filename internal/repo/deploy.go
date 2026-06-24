@@ -29,9 +29,9 @@ func (r *DeployRepo) InsertDeployment(d *model.Deployment) (string, error) {
 	defer r.db.Unlock()
 
 	_, err := r.db.Conn.Exec(
-		`INSERT INTO deployment (id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		d.ID, d.GroupID, d.ResourceID, d.TargetPath, d.AliasID, d.DeployType, d.Track, d.CreatedAt,
+		`INSERT INTO deployment (id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		d.ID, d.GroupID, d.ResourceID, d.TargetPath, d.AliasID, d.DeployType, d.Track, d.CreatedAt, d.PresetID,
 	)
 	if err != nil {
 		return "", fmt.Errorf("插入部署记录失败: %w", err)
@@ -66,9 +66,9 @@ func (r *DeployRepo) GetDeploymentByID(id string) (*model.Deployment, error) {
 
 	d := &model.Deployment{}
 	err := r.db.Conn.QueryRow(
-		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at
+		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id
 		 FROM deployment WHERE id = ?`, id,
-	).Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt)
+	).Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt, &d.PresetID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -103,7 +103,7 @@ func (r *DeployRepo) ListDeployments(page, pageSize int) ([]model.Deployment, in
 
 	offset := (page - 1) * pageSize
 	rows, err := r.db.Conn.Query(
-		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at
+		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id
 		 FROM deployment ORDER BY created_at DESC LIMIT ? OFFSET ?`, pageSize, offset,
 	)
 	if err != nil {
@@ -114,7 +114,7 @@ func (r *DeployRepo) ListDeployments(page, pageSize int) ([]model.Deployment, in
 	var list []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
-		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt, &d.PresetID); err != nil {
 			return nil, 0, fmt.Errorf("扫描部署行失败: %w", err)
 		}
 		list = append(list, d)
@@ -200,7 +200,7 @@ func (r *DeployRepo) GetDeploymentsByTarget() (map[string][]model.Deployment, er
 	defer r.db.RUnlock()
 
 	rows, err := r.db.Conn.Query(
-		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at
+		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id
 		 FROM deployment ORDER BY target_path, created_at DESC`,
 	)
 	if err != nil {
@@ -211,7 +211,7 @@ func (r *DeployRepo) GetDeploymentsByTarget() (map[string][]model.Deployment, er
 	result := make(map[string][]model.Deployment)
 	for rows.Next() {
 		var d model.Deployment
-		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt, &d.PresetID); err != nil {
 			return nil, fmt.Errorf("扫描部署行失败: %w", err)
 		}
 		result[d.TargetPath] = append(result[d.TargetPath], d)
@@ -293,7 +293,7 @@ func (r *DeployRepo) GetTrackDeploymentsByGroupID(groupID string) ([]model.Deplo
 	defer r.db.RUnlock()
 
 	rows, err := r.db.Conn.Query(
-		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at
+		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id
 		 FROM deployment WHERE group_id = ? AND track = 1`, groupID,
 	)
 	if err != nil {
@@ -304,7 +304,7 @@ func (r *DeployRepo) GetTrackDeploymentsByGroupID(groupID string) ([]model.Deplo
 	var list []model.Deployment
 	for rows.Next() {
 		var d model.Deployment
-		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt); err != nil {
+		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt, &d.PresetID); err != nil {
 			return nil, fmt.Errorf("扫描部署行失败: %w", err)
 		}
 		list = append(list, d)
@@ -365,6 +365,33 @@ func (r *DeployRepo) GetDeploymentItemsByResourceID(resourceID string) ([]model.
 			return nil, fmt.Errorf("扫描部署明细行失败: %w", err)
 		}
 		list = append(list, item)
+	}
+	return list, nil
+}
+
+// ListDeploymentsByPreset 查询某 preset 下所有部署
+// 参数 presetID: preset ID
+// 返回: 部署列表、错误信息
+func (r *DeployRepo) ListDeploymentsByPreset(presetID string) ([]model.Deployment, error) {
+	r.db.RLock()
+	defer r.db.RUnlock()
+
+	rows, err := r.db.Conn.Query(
+		`SELECT id, group_id, resource_id, target_path, alias_id, deploy_type, track, created_at, preset_id
+		 FROM deployment WHERE preset_id = ?`, presetID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("查询 preset 部署失败: %w", err)
+	}
+	defer rows.Close()
+
+	var list []model.Deployment
+	for rows.Next() {
+		var d model.Deployment
+		if err := rows.Scan(&d.ID, &d.GroupID, &d.ResourceID, &d.TargetPath, &d.AliasID, &d.DeployType, &d.Track, &d.CreatedAt, &d.PresetID); err != nil {
+			return nil, fmt.Errorf("扫描 preset 部署行失败: %w", err)
+		}
+		list = append(list, d)
 	}
 	return list, nil
 }

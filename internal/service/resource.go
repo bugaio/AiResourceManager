@@ -21,6 +21,7 @@ type ResourceService struct {
 	baseDir    string // ~/.aiManager 根目录
 	deploySvc  *DeployService
 	watcherSvc *WatcherService
+	presetRepo *repo.PresetRepo // 用于资源删除时检查 preset 关联
 }
 
 // NewResourceService 创建资源服务实例
@@ -41,11 +42,30 @@ func (s *ResourceService) SetWatcherService(w *WatcherService) {
 	s.watcherSvc = w
 }
 
+// SetPresetRepo 注入 preset 数据仓库（用于资源删除拦截 1005）
+func (s *ResourceService) SetPresetRepo(r *repo.PresetRepo) {
+	s.presetRepo = r
+}
+
 // CreateResource 创建资源
 // 参数 req: 创建请求
 // 返回: 创建的资源实体、错误信息
 // 逻辑: 校验类型和名称 → 生成UUID → 创建文件 → 写入数据库 → 关联分组
 func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.Resource, error) {
+	return s.createResourceInternal(req, nil)
+}
+
+// CreatePrivateResource 创建 preset 私有资源（owner_preset_id 非空）
+// 校验流程与 CreateResource 一致，仅将 owner_preset_id 写入 DB
+func (s *ResourceService) CreatePrivateResource(presetID string, req *model.CreateResourceReq) (*model.Resource, error) {
+	if strings.TrimSpace(presetID) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "presetID 不能为空")
+	}
+	return s.createResourceInternal(req, &presetID)
+}
+
+// createResourceInternal 创建资源的内部实现，ownerPresetID 非 nil 表示私有资源
+func (s *ResourceService) createResourceInternal(req *model.CreateResourceReq, ownerPresetID *string) (*model.Resource, error) {
 	// 校验类型
 	if !isValidType(req.Type) {
 		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/config/prompt")
@@ -66,7 +86,7 @@ func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.R
 
 	// 生成 UUID 和文件路径
 	uuid := util.NewUUID()
-	filePath, err := s.createFiles(req.Type, req.Name, uuid, req.Description)
+	filePath, err := s.createFiles(req.Type, req.Name, uuid, req.Description, ownerPresetID)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
 	}
@@ -74,14 +94,15 @@ func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.R
 	// 构造资源实体
 	now := timeNow()
 	resource := &model.Resource{
-		ID:          uuid,
-		Name:        req.Name,
-		Type:        req.Type,
-		Path:        filePath,
-		Description: req.Description,
-		Metadata:    "{}",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            uuid,
+		Name:          req.Name,
+		Type:          req.Type,
+		Path:          filePath,
+		Description:   req.Description,
+		Metadata:      "{}",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		OwnerPresetID: ownerPresetID,
 	}
 
 	// 写入数据库
@@ -89,8 +110,8 @@ func (s *ResourceService) CreateResource(req *model.CreateResourceReq) (*model.R
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
 	}
 
-	// 关联分组
-	if req.GroupID != "" && req.GroupID != "0" {
+	// 关联分组 (私有资源不进分组)
+	if ownerPresetID == nil && req.GroupID != "" && req.GroupID != "0" {
 		if err := s.repo.InsertGroupResource(req.GroupID, resource.ID); err != nil {
 			// 分组关联失败不影响创建结果，只记录
 			_ = err
@@ -115,6 +136,18 @@ type ImportedSkillFile struct {
 // 参数 files: 该 skill 子目录下的所有文件(含相对路径)
 // 返回: 创建的资源、错误
 func (s *ResourceService) ImportSkill(name, description, groupID string, files []ImportedSkillFile) (*model.Resource, error) {
+	return s.importSkillInternal(name, description, groupID, files, nil)
+}
+
+// ImportPrivateSkill 导入私有 skill（owner_preset_id 非空）
+func (s *ResourceService) ImportPrivateSkill(presetID, name, description string, files []ImportedSkillFile) (*model.Resource, error) {
+	if strings.TrimSpace(presetID) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "presetID 不能为空")
+	}
+	return s.importSkillInternal(name, description, "", files, &presetID)
+}
+
+func (s *ResourceService) importSkillInternal(name, description, groupID string, files []ImportedSkillFile, ownerPresetID *string) (*model.Resource, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
 	}
@@ -132,7 +165,7 @@ func (s *ResourceService) ImportSkill(name, description, groupID string, files [
 	}
 
 	uuid := util.NewUUID()
-	dir := filepath.Join(s.baseDir, "skills", uuid)
+	dir := filepath.Join(s.typeDir("skill", ownerPresetID), uuid)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 skill 目录失败: "+err.Error())
 	}
@@ -158,22 +191,23 @@ func (s *ResourceService) ImportSkill(name, description, groupID string, files [
 	// 写 DB(与 CreateResource 完全相同的字段)
 	now := timeNow()
 	resource := &model.Resource{
-		ID:          uuid,
-		Name:        name,
-		Type:        "skill",
-		Path:        dir,
-		Description: description,
-		Metadata:    "{}",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            uuid,
+		Name:          name,
+		Type:          "skill",
+		Path:          dir,
+		Description:   description,
+		Metadata:      "{}",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		OwnerPresetID: ownerPresetID,
 	}
 	if err := s.repo.InsertResource(resource); err != nil {
 		_ = os.RemoveAll(dir)
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
 	}
 
-	// 关联分组(与 CreateResource 一致,失败不阻断)
-	if groupID != "" && groupID != "0" {
+	// 关联分组(与 CreateResource 一致,失败不阻断；私有资源不进分组)
+	if ownerPresetID == nil && groupID != "" && groupID != "0" {
 		_ = s.repo.InsertGroupResource(groupID, resource.ID)
 	}
 
@@ -207,6 +241,18 @@ func sanitizeRelPath(p string) (string, error) {
 // 参数 data: 源 .md 文件原始字节
 // 返回: 创建的资源、错误
 func (s *ResourceService) ImportAgent(name, description, groupID string, data []byte) (*model.Resource, error) {
+	return s.importAgentInternal(name, description, groupID, data, nil)
+}
+
+// ImportPrivateAgent 导入私有 agent（owner_preset_id 非空）
+func (s *ResourceService) ImportPrivateAgent(presetID, name, description string, data []byte) (*model.Resource, error) {
+	if strings.TrimSpace(presetID) == "" {
+		return nil, model.NewBizError(model.ErrParamValidation, "presetID 不能为空")
+	}
+	return s.importAgentInternal(name, description, "", data, &presetID)
+}
+
+func (s *ResourceService) importAgentInternal(name, description, groupID string, data []byte, ownerPresetID *string) (*model.Resource, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
 	}
@@ -224,7 +270,7 @@ func (s *ResourceService) ImportAgent(name, description, groupID string, data []
 	}
 
 	uuid := util.NewUUID()
-	dir := filepath.Join(s.baseDir, "agents")
+	dir := s.typeDir("agent", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 agents 目录失败: "+err.Error())
 	}
@@ -235,21 +281,22 @@ func (s *ResourceService) ImportAgent(name, description, groupID string, data []
 
 	now := timeNow()
 	resource := &model.Resource{
-		ID:          uuid,
-		Name:        name,
-		Type:        "agent",
-		Path:        filePath,
-		Description: description,
-		Metadata:    "{}",
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:            uuid,
+		Name:          name,
+		Type:          "agent",
+		Path:          filePath,
+		Description:   description,
+		Metadata:      "{}",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		OwnerPresetID: ownerPresetID,
 	}
 	if err := s.repo.InsertResource(resource); err != nil {
 		_ = os.Remove(filePath)
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
 	}
 
-	if groupID != "" && groupID != "0" {
+	if ownerPresetID == nil && groupID != "" && groupID != "0" {
 		_ = s.repo.InsertGroupResource(groupID, resource.ID)
 	}
 	return resource, nil
@@ -271,10 +318,11 @@ func (s *ResourceService) GetResource(id string) (*model.Resource, error) {
 // 参数 resourceType: 类型筛选
 // 参数 search: 名称搜索
 // 参数 groupID: 分组 ID
+// 参数 ownerPresetID: 私有资源过滤（详见 repo.ListResources 注释）
 // 参数 page: 页码
 // 参数 pageSize: 每页数量
 // 返回: 分页响应、错误信息
-func (s *ResourceService) ListResources(resourceType, search, groupID string, page, pageSize int) (*model.ResourceListResp, error) {
+func (s *ResourceService) ListResources(resourceType, search, groupID, ownerPresetID string, page, pageSize int) (*model.ResourceListResp, error) {
 	if page < 1 {
 		page = 1
 	}
@@ -282,9 +330,22 @@ func (s *ResourceService) ListResources(resourceType, search, groupID string, pa
 		pageSize = 20
 	}
 
-	list, total, err := s.repo.ListResources(resourceType, search, groupID, page, pageSize)
+	list, total, err := s.repo.ListResources(resourceType, search, groupID, ownerPresetID, page, pageSize)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+
+	// 填充 preset_links：批量查询本页资源各自被哪些 preset 关联（避免 N+1）
+	if s.presetRepo != nil && len(list) > 0 {
+		ids := make([]string, len(list))
+		for i := range list {
+			ids[i] = list[i].ID
+		}
+		if linkMap, lerr := s.presetRepo.ListPresetsByResourceIDs(ids); lerr == nil {
+			for i := range list {
+				list[i].PresetLinks = linkMap[list[i].ID]
+			}
+		}
 	}
 
 	return &model.ResourceListResp{
@@ -330,9 +391,14 @@ func (s *ResourceService) UpdateResource(id string, req *model.UpdateResourceReq
 
 // DeleteResource 删除资源
 // 参数 id: 资源 ID
-// 参数 confirm: 是否确认级联删除
-// 返回: 关联部署信息（有关联且未确认时）、错误信息
-func (s *ResourceService) DeleteResource(id string, confirm bool) (interface{}, error) {
+// 参数 confirm: 是否确认级联部署删除
+// 参数 unlink: 资源被 preset 关联时,是否级联解除关联并撤销受影响的 preset 部署
+// 返回:
+//   - data:  附加信息（关联部署 / 关联 preset）
+//   - error: 业务错误
+//
+// 优先级: preset 关联拦截 (1005) > 部署关联拦截 (1004)
+func (s *ResourceService) DeleteResource(id string, confirm bool, unlink bool) (interface{}, error) {
 	r, err := s.repo.GetResourceByID(id)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
@@ -341,7 +407,44 @@ func (s *ResourceService) DeleteResource(id string, confirm bool) (interface{}, 
 		return nil, model.NewBizError(model.ErrResourceNotFound, "资源不存在")
 	}
 
-	// 检查部署关联
+	// 私有资源不允许通过普通接口删除,要走 preset 的级联/私有资源接口
+	if r.OwnerPresetID != nil && *r.OwnerPresetID != "" {
+		return nil, model.NewBizError(model.ErrResourceLockedByPreset,
+			"该资源是 preset 的私有资源,请通过 preset 接口删除")
+	}
+
+	// 1. preset 关联拦截（优先于部署拦截）
+	if s.presetRepo != nil {
+		links, lErr := s.presetRepo.ListPresetsByResourceID(id)
+		if lErr != nil {
+			return nil, model.NewBizError(model.ErrSystemDB, lErr.Error())
+		}
+		if len(links) > 0 {
+			if !unlink {
+				return model.ResourceDeleteBlockedData{Presets: links},
+					model.NewBizError(model.ErrResourceLockedByPreset, "资源被 preset 管理,需先解除关联")
+			}
+			// unlink=true: 解除全部关联 → 撤销受影响 preset 的部署(让上层 PresetService 处理)
+			affectedPresets := make([]string, 0, len(links))
+			for _, p := range links {
+				affectedPresets = append(affectedPresets, p.ID)
+			}
+			// 解除关联
+			for _, pid := range affectedPresets {
+				if uErr := s.presetRepo.UnlinkResources(pid, []string{id}); uErr != nil {
+					return nil, model.NewBizError(model.ErrSystemDB, uErr.Error())
+				}
+			}
+			// 重新部署受影响的 preset（移除该资源的链接）
+			if s.deploySvc != nil {
+				for _, pid := range affectedPresets {
+					s.deploySvc.SyncPresetDeployments(pid)
+				}
+			}
+		}
+	}
+
+	// 2. 检查部署关联
 	deployments, err := s.repo.GetResourceDeployments(id)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
@@ -375,16 +478,46 @@ func (s *ResourceService) DeleteResource(id string, confirm bool) (interface{}, 
 	return nil, nil
 }
 
+// DeletePrivateResource 物理删除私有资源（preset 级联调用）
+// 不做 preset 关联拦截 / 私有锁定校验，仅撤销部署、删文件、删 DB
+func (s *ResourceService) DeletePrivateResource(id string) error {
+	r, err := s.repo.GetResourceByID(id)
+	if err != nil {
+		return model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	if r == nil {
+		return nil
+	}
+
+	deployments, _ := s.repo.GetResourceDeployments(id)
+	if s.deploySvc != nil && len(deployments) > 0 {
+		for _, dep := range deployments {
+			s.deploySvc.UndeployResourceFromTarget(id, dep.ID, dep.TargetPath, "")
+		}
+	}
+
+	if s.watcherSvc != nil {
+		s.watcherSvc.SuppressUUID(id, 5*time.Second)
+	}
+	s.deleteFiles(r.Type, r.Path)
+
+	if err := s.repo.DeleteResource(id); err != nil {
+		return model.NewBizError(model.ErrResourceFileIO, err.Error())
+	}
+	return nil
+}
+
 // BatchDelete 批量删除资源
 // 参数 req: 批量删除请求
+// 参数 unlink: 若资源被 preset 关联,是否级联解除关联（透传给 DeleteResource）
 // 返回: 各项删除结果列表、错误信息
-func (s *ResourceService) BatchDelete(req *model.BatchDeleteReq) ([]model.BatchDeleteResult, error) {
+func (s *ResourceService) BatchDelete(req *model.BatchDeleteReq, unlink bool) ([]model.BatchDeleteResult, error) {
 	results := make([]model.BatchDeleteResult, 0, len(req.IDs))
 
 	for _, id := range req.IDs {
 		result := model.BatchDeleteResult{ID: id}
 
-		data, err := s.DeleteResource(id, req.Confirm)
+		data, err := s.DeleteResource(id, req.Confirm, unlink)
 		if err != nil {
 			if bizErr, ok := err.(*model.BizError); ok {
 				result.Success = false
@@ -477,20 +610,48 @@ func (s *ResourceService) getContentPath(resourceType, basePath string) string {
 // 参数 name: 资源名称
 // 参数 uuid: 生成的 UUID
 // 参数 description: 资源描述
+// 参数 ownerPresetID: 非 nil 表示私有资源，存到 presets/{presetID}/ 下
 // 返回: 文件路径、错误信息
-func (s *ResourceService) createFiles(resourceType, name, uuid, description string) (string, error) {
+func (s *ResourceService) createFiles(resourceType, name, uuid, description string, ownerPresetID *string) (string, error) {
 	switch resourceType {
 	case "skill":
-		return s.createSkillFiles(name, uuid, description)
+		return s.createSkillFiles(name, uuid, description, ownerPresetID)
 	case "agent":
-		return s.createAgentFile(name, uuid)
+		return s.createAgentFile(name, uuid, ownerPresetID)
 	case "config":
-		return s.createConfigFile(name, uuid)
+		return s.createConfigFile(name, uuid, ownerPresetID)
 	case "prompt":
-		return s.createPromptFile(name, uuid)
+		return s.createPromptFile(name, uuid, ownerPresetID)
 	default:
 		return "", fmt.Errorf("不支持的资源类型: %s", resourceType)
 	}
+}
+
+// typeDir 返回某类型资源的存储根目录
+// 全局资源按类型分目录：{baseDir}/{skills|agents|configs|prompts}
+// 私有资源（ownerPresetID 非空）存到 {baseDir}/presets/{presetID}/{skills|agents|configs|prompts}
+// 私有资源的类型子目录与全局资源保持一致，仅多一层 presets/{presetID} 隔离
+func (s *ResourceService) typeDir(resourceType string, ownerPresetID *string) string {
+	sub := typeSubdir(resourceType)
+	if ownerPresetID != nil && *ownerPresetID != "" {
+		return filepath.Join(s.baseDir, "presets", *ownerPresetID, sub)
+	}
+	return filepath.Join(s.baseDir, sub)
+}
+
+// typeSubdir 返回资源类型对应的存储子目录名（全局/私有共用）
+func typeSubdir(resourceType string) string {
+	switch resourceType {
+	case "skill":
+		return "skills"
+	case "agent":
+		return "agents"
+	case "config":
+		return "configs"
+	case "prompt":
+		return "prompts"
+	}
+	return ""
 }
 
 // createSkillFiles 创建 skill 类型的文件: {baseDir}/skills/{uuid}/SKILL.md + meta.json
@@ -498,14 +659,17 @@ func (s *ResourceService) createFiles(resourceType, name, uuid, description stri
 // 参数 uuid: UUID
 // 参数 description: skill 描述
 // 返回: skill 目录路径、错误信息
-func (s *ResourceService) createSkillFiles(name, uuid, description string) (string, error) {
-	dir := filepath.Join(s.baseDir, "skills", uuid)
+func (s *ResourceService) createSkillFiles(name, uuid, description string, ownerPresetID *string) (string, error) {
+	dir := filepath.Join(s.typeDir("skill", ownerPresetID), uuid)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("创建 skill 目录失败: %w", err)
 	}
 
-	// 写入 SKILL.md
-	skillContent := fmt.Sprintf("# %s\n\n", name)
+	// 写入 SKILL.md（preset 私有资源创建空文件，全局资源带标题模板）
+	skillContent := ""
+	if ownerPresetID == nil {
+		skillContent = fmt.Sprintf("# %s\n\n", name)
+	}
 	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skillContent), 0644); err != nil {
 		return "", fmt.Errorf("写入 SKILL.md 失败: %w", err)
 	}
@@ -528,14 +692,18 @@ func (s *ResourceService) createSkillFiles(name, uuid, description string) (stri
 // 参数 name: agent 名称
 // 参数 uuid: UUID
 // 返回: 文件路径、错误信息
-func (s *ResourceService) createAgentFile(name, uuid string) (string, error) {
-	dir := filepath.Join(s.baseDir, "agents")
+func (s *ResourceService) createAgentFile(name, uuid string, ownerPresetID *string) (string, error) {
+	dir := s.typeDir("agent", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("创建 agents 目录失败: %w", err)
 	}
 
 	filePath := filepath.Join(dir, uuid+".md")
-	content := fmt.Sprintf("# %s\n\n", name)
+	// preset 私有资源创建空文件，全局资源带标题模板
+	content := ""
+	if ownerPresetID == nil {
+		content = fmt.Sprintf("# %s\n\n", name)
+	}
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("写入 agent 文件失败: %w", err)
 	}
@@ -548,19 +716,23 @@ func (s *ResourceService) createAgentFile(name, uuid string) (string, error) {
 // 参数 uuid: UUID
 // 返回: 文件路径、错误信息
 // 默认后缀 .jsonc(JSONC 格式,允许注释). 后续编辑/导入时可改为 .yaml/.toml.
-func (s *ResourceService) createConfigFile(name, uuid string) (string, error) {
-	dir := filepath.Join(s.baseDir, "configs")
+func (s *ResourceService) createConfigFile(name, uuid string, ownerPresetID *string) (string, error) {
+	dir := s.typeDir("config", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("创建 configs 目录失败: %w", err)
 	}
 
 	filePath := filepath.Join(dir, uuid+".jsonc")
-	content := `{
+	// preset 私有资源创建空文件，全局资源带 config 模板
+	content := ""
+	if ownerPresetID == nil {
+		content = `{
   // config 配置片段
   // 部署时将与目标文件深度合并,保留目标原有注释和格式
   "mcpServers": {}
 }
 `
+	}
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("写入 config 文件失败: %w", err)
@@ -574,19 +746,23 @@ func (s *ResourceService) createConfigFile(name, uuid string) (string, error) {
 // 参数 uuid: UUID
 // 返回: 文件路径、错误信息
 // 模板内容由 PRD §2.4 给出,作为新建资源的初始编辑器内容
-func (s *ResourceService) createPromptFile(name, uuid string) (string, error) {
-	dir := filepath.Join(s.baseDir, "prompts")
+func (s *ResourceService) createPromptFile(name, uuid string, ownerPresetID *string) (string, error) {
+	dir := s.typeDir("prompt", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", fmt.Errorf("创建 prompts 目录失败: %w", err)
 	}
 
 	filePath := filepath.Join(dir, uuid+".md")
-	content := `<!-- 在此编写提示词内容 -->
+	// preset 私有资源创建空文件，全局资源带 prompt 模板
+	content := ""
+	if ownerPresetID == nil {
+		content = `<!-- 在此编写提示词内容 -->
 
 ## 用法
 
 > 描述这段提示词的使用场景与触发条件
 `
+	}
 
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
 		return "", fmt.Errorf("写入 prompt 文件失败: %w", err)

@@ -45,15 +45,18 @@ func RegisterResourceRoutes(group *gin.RouterGroup, h *ResourceHandler) {
 }
 
 // handleList 处理资源列表查询
-// 查询参数: type, search, group_id, page, page_size
+// 查询参数: type, search, group_id, owner_preset_id, page, page_size
+// owner_preset_id 默认为 __none__（仅返回全局资源）；显式传 preset id 时返回该 preset 私有资源
 func (h *ResourceHandler) handleList(c *gin.Context) {
 	resourceType := c.Query("type")
 	search := c.Query("search")
 	groupID := c.DefaultQuery("group_id", "0")
+	// 默认排除私有资源；若需要查询私有资源前端需传 owner_preset_id={presetID}
+	ownerPresetID := c.DefaultQuery("owner_preset_id", "__none__")
 	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
 	pageSize, _ := strconv.Atoi(c.DefaultQuery("page_size", "20"))
 
-	resp, err := h.svc.ListResources(resourceType, search, groupID, page, pageSize)
+	resp, err := h.svc.ListResources(resourceType, search, groupID, ownerPresetID, page, pageSize)
 	if err != nil {
 		handleBizError(c, err)
 		return
@@ -115,12 +118,13 @@ func (h *ResourceHandler) handleUpdate(c *gin.Context) {
 
 // handleDelete 处理资源删除
 // 路径参数: id
-// 查询参数: confirm (true 时级联删除)
+// 查询参数: confirm (true 时级联部署删除), unlink (true 时解除 preset 关联并撤销受影响 preset 部署)
 func (h *ResourceHandler) handleDelete(c *gin.Context) {
 	id := c.Param("id")
 	confirm := c.Query("confirm") == "true"
+	unlink := c.Query("unlink") == "true"
 
-	data, err := h.svc.DeleteResource(id, confirm)
+	data, err := h.svc.DeleteResource(id, confirm, unlink)
 	if err != nil {
 		if bizErr, ok := err.(*model.BizError); ok {
 			ErrorWithData(c, bizErr.Code, bizErr.Msg, data)
@@ -135,6 +139,7 @@ func (h *ResourceHandler) handleDelete(c *gin.Context) {
 
 // handleBatchDelete 处理批量删除
 // 请求体: BatchDeleteReq {ids: [], confirm: bool}
+// 查询参数: unlink=true 时级联解除 preset 关联
 func (h *ResourceHandler) handleBatchDelete(c *gin.Context) {
 	var req model.BatchDeleteReq
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -147,7 +152,8 @@ func (h *ResourceHandler) handleBatchDelete(c *gin.Context) {
 		return
 	}
 
-	results, err := h.svc.BatchDelete(&req)
+	unlink := c.Query("unlink") == "true"
+	results, err := h.svc.BatchDelete(&req, unlink)
 	if err != nil {
 		handleBizError(c, err)
 		return

@@ -14,6 +14,7 @@ const emit = defineEmits<{
   (e: 'deploy', resource: Resource): void
   (e: 'delete', resource: Resource): void
   (e: 'removeFromGroup', resource: Resource): void
+  (e: 'viewLinks', resource: Resource): void
 }>()
 
 /** 当前是否在"全部"分组 */
@@ -47,6 +48,7 @@ function handleCommand(cmd: string, row: Resource) {
   if (cmd === 'edit') emit('edit', row)
   else if (cmd === 'editContent') emit('editContent', row)
   else if (cmd === 'deploy') emit('deploy', row)
+  else if (cmd === 'viewLinks') emit('viewLinks', row)
   else if (cmd === 'delete') {
     if (isAllGroup.value) {
       emit('delete', row)
@@ -54,6 +56,11 @@ function handleCommand(cmd: string, row: Resource) {
       emit('removeFromGroup', row)
     }
   }
+}
+
+/** 某行是否被 preset 关联 */
+function rowHasLinks(row: Resource): boolean {
+  return !!row.preset_links && row.preset_links.length > 0
 }
 
 /** 双击行打开内容编辑 */
@@ -73,7 +80,21 @@ function handleRowDblClick(row: Resource) {
     <!-- 多选列 -->
     <el-table-column type="selection" width="50" />
     <!-- 名称 -->
-    <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip />
+    <el-table-column prop="name" label="名称" min-width="160" show-overflow-tooltip>
+      <template #default="{ row }">
+        <span class="inline-flex items-center gap-1">
+          <span class="truncate">{{ row.name }}</span>
+          <el-tooltip
+            v-if="row.preset_links && row.preset_links.length > 0"
+            effect="dark"
+            placement="top"
+            :content="'被以下 Preset 管理：' + row.preset_links.map((p: any) => p.name).join(', ')"
+          >
+            <span class="text-sm leading-none" aria-label="被 Preset 关联">🔗</span>
+          </el-tooltip>
+        </span>
+      </template>
+    </el-table-column>
     <!-- 描述 -->
     <el-table-column prop="description" label="描述" min-width="240" show-overflow-tooltip />
     <!-- 类型 -->
@@ -106,6 +127,7 @@ function handleRowDblClick(row: Resource) {
               <el-dropdown-item command="edit">编辑</el-dropdown-item>
               <el-dropdown-item command="editContent">编辑内容</el-dropdown-item>
               <el-dropdown-item command="deploy">部署</el-dropdown-item>
+              <el-dropdown-item v-if="rowHasLinks(row)" command="viewLinks" divided>查看关联</el-dropdown-item>
               <el-dropdown-item command="delete" divided>{{ isAllGroup ? '删除' : '从分组移除' }}</el-dropdown-item>
             </el-dropdown-menu>
           </template>

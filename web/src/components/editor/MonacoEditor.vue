@@ -15,9 +15,11 @@ const props = withDefaults(defineProps<{
   modelValue: string
   language?: string
   theme?: 'vs' | 'vs-dark'
+  readonly?: boolean
 }>(), {
   language: 'markdown',
   theme: 'vs',
+  readonly: false,
 })
 
 const emit = defineEmits<{
@@ -45,6 +47,7 @@ onMounted(() => {
     wordWrap: 'on',
     scrollBeyondLastLine: false,
     tabSize: 2,
+    readOnly: props.readonly,
   })
 
   // 监听编辑器内容变化 → 向外emit
@@ -71,6 +74,11 @@ watch(() => props.language, (lang) => {
 // 监听主题变化 → 切换Monaco主题
 watch(() => props.theme, (theme) => {
   monaco.editor.setTheme(theme)
+})
+
+// 监听只读状态变化 → 更新编辑器只读
+watch(() => props.readonly, (val) => {
+  editorInstance.value?.updateOptions({ readOnly: val })
 })
 
 // 监听外部modelValue变化 → 更新编辑器内容（避免循环）
