@@ -29,12 +29,9 @@ function handleCommand(command: string) {
   }
 }
 
-/** 类型切换：若当前在 /presets 先跳回 /resources，再 setType */
-async function handleTypeClick(type: ResourceType) {
-  if (presetActive.value) {
-    await router.push('/resources')
-  }
-  uiStore.setType(type)
+/** 类型切换：跳到对应类型路由，currentType 由路由守卫同步 */
+function handleTypeClick(type: ResourceType) {
+  router.push('/' + type)
 }
 </script>
 
