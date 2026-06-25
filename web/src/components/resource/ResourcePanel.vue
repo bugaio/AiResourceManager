@@ -126,6 +126,11 @@ function handleSelectAll(val: boolean | string | number) {
   }
 }
 
+/** 切换「仅看未分组」筛选 */
+function handleUngroupedChange(val: boolean | string | number) {
+  resourceStore.setUngroupedOnly(!!val, props.type)
+}
+
 // 搜索 → 写入本 type 的 store(store 内部按 type 独立防抖)
 watch(searchInput, (val) => {
   resourceStore.setSearch(val, props.type)
@@ -293,6 +298,13 @@ onActivated(() => resourceStore.fetchResources(props.type))
           :indeterminate="isIndeterminate"
           @change="handleSelectAll"
           >全选</el-checkbox
+        >
+        <el-checkbox
+          v-if="state.currentGroupId === '0'"
+          :model-value="state.ungroupedOnly"
+          class="ml-1"
+          @change="handleUngroupedChange"
+          >未分组</el-checkbox
         >
         <el-input
           v-model="searchInput"

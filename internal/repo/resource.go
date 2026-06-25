@@ -88,6 +88,9 @@ func (repo *ResourceRepo) CheckNameExists(resourceType, name, excludeID string) 
 // OwnerPresetNone 哨兵值：在 ListResources 中表示 "仅查全局资源" (owner_preset_id IS NULL)
 const OwnerPresetNone = "__none__"
 
+// GroupUngrouped 哨兵值：在 ListResources 中表示 "仅查未被任何分组包含的资源"
+const GroupUngrouped = "__ungrouped__"
+
 // ListResources 分页查询资源列表
 // 参数 resourceType: 资源类型筛选
 // 参数 search: 名称模糊搜索关键词
@@ -117,7 +120,10 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPres
 		conditions = append(conditions, "r.name LIKE ?")
 		args = append(args, "%"+search+"%")
 	}
-	if groupID != "" && groupID != "0" {
+	if groupID == GroupUngrouped {
+		// 未分组：不存在任何 group_resource 关联的资源
+		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM group_resource gr WHERE gr.resource_id = r.id)")
+	} else if groupID != "" && groupID != "0" {
 		fromClause += ` INNER JOIN group_resource gr ON r.id = gr.resource_id`
 		conditions = append(conditions, "gr.group_id = ?")
 		args = append(args, groupID)

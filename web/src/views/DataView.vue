@@ -4,9 +4,11 @@ import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { exportData, importData } from '@/api/data'
+import { useUiStore } from '@/stores/ui'
 
 /** 数据导入导出视图 */
 const router = useRouter()
+const uiStore = useUiStore()
 
 // 导出状态
 const exportPath = ref('~/ai-resource-export')
@@ -19,9 +21,9 @@ const importStrategy = ref<'overwrite' | 'skip' | 'keep_both'>('skip')
 const importing = ref(false)
 const importResult = ref<{ added: number; overwritten: number; skipped: number } | null>(null)
 
-/** 返回资源页 */
+/** 返回来源资源模块（currentType 仍保留进入前的类型） */
 function goBack() {
-  router.push('/resources')
+  router.push(`/${uiStore.currentType}`)
 }
 
 /** 格式化文件大小 */

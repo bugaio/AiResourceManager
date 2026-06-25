@@ -14,9 +14,14 @@ interface TypeState {
   search: string
   /** 当前分组('0'=全部) */
   currentGroupId: string
+  /** 仅在「全部」分组下生效：true 时只显示未被任何分组包含的资源 */
+  ungroupedOnly: boolean
 }
 
 const ALL_TYPES: ResourceType[] = ['skill', 'agent', 'config', 'prompt']
+
+/** 后端哨兵值：group_id 传此值表示「仅查未分组资源」 */
+const GROUP_UNGROUPED = '__ungrouped__'
 
 function emptyState(): TypeState {
   return {
@@ -26,6 +31,7 @@ function emptyState(): TypeState {
     total: 0,
     search: '',
     currentGroupId: '0',
+    ungroupedOnly: false,
   }
 }
 
@@ -71,12 +77,19 @@ export const useResourceStore = defineStore('resource', () => {
     const s = states.value[t]
     s.loading = true
     try {
+      // 「全部」分组下且勾选未分组 → 传哨兵值;否则按 currentGroupId 过滤
+      let groupParam: string | undefined
+      if (s.currentGroupId === '0') {
+        groupParam = s.ungroupedOnly ? GROUP_UNGROUPED : undefined
+      } else {
+        groupParam = s.currentGroupId
+      }
       const res = await apiFetchResources({
         type: t,
         page: s.page,
         page_size: pageSize.value,
         search: s.search || undefined,
-        group_id: s.currentGroupId === '0' ? undefined : s.currentGroupId,
+        group_id: groupParam,
       })
       s.resources = res.list
       s.total = res.total
@@ -111,9 +124,21 @@ export const useResourceStore = defineStore('resource', () => {
     const t = type ?? ui.currentType
     const s = states.value[t]
     s.currentGroupId = id
+    // 离开「全部」分组时，未分组筛选失去意义，复位
+    if (id !== '0') s.ungroupedOnly = false
     s.page = 1
     fetchResources(t)
     // 切换分组时清空该 type 的选中(同 type 内,符合预期)
+    useSelectionStore().clearForType(t)
+  }
+
+  /** 切换「仅看未分组」筛选(仅在「全部」分组下有意义) */
+  function setUngroupedOnly(val: boolean, type?: ResourceType) {
+    const t = type ?? ui.currentType
+    const s = states.value[t]
+    s.ungroupedOnly = val
+    s.page = 1
+    fetchResources(t)
     useSelectionStore().clearForType(t)
   }
 
@@ -147,6 +172,7 @@ export const useResourceStore = defineStore('resource', () => {
     setPage,
     setSearch,
     setGroupId,
+    setUngroupedOnly,
     removeResourceLocally,
   }
 })

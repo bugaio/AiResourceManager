@@ -6,9 +6,10 @@
 //   - yaml/yml:   走 yaml.v3 *yaml.Node,保留注释/锚点/格式风格
 //   - toml:       解析后重新序列化(Go 生态无保留注释的 TOML 库,此格式会被重写)
 //
-// 合并规则(与原 MCP 行为一致):
+// 合并规则:
 //   - 顶层及嵌套 map 递归深度合并
-//   - 数组/标量/类型不一致由 src 覆盖 dst
+//   - 数组拼接(dst 元素在前, src 元素在后)
+//   - 标量/类型不一致由 src 覆盖 dst
 //   - dst 中独有的 key 保留
 package util
 
@@ -270,7 +271,12 @@ func PatchMapping(dst, src *yamlv3.Node) {
 				PatchMapping(existingVal, valNode)
 				continue
 			}
-			// 标量/数组/类型不一致 → 用 src 节点替换
+			if existingVal.Kind == yamlv3.SequenceNode && valNode.Kind == yamlv3.SequenceNode {
+				// 两边都是数组 → 拼接(dst 元素在前, src 元素在后)
+				existingVal.Content = append(existingVal.Content, valNode.Content...)
+				continue
+			}
+			// 标量/类型不一致 → 用 src 节点替换
 			dst.Content[idx+1] = valNode
 			continue
 		}

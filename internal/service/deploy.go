@@ -801,6 +801,13 @@ func (s *DeployService) deployConfig(resource *model.Resource, targetPath string
 		}
 	}
 
+	// 7.5 force 重部署幂等：先移除本资源自身上次的贡献，再重新合并。
+	//     数组合并为"拼接"语义（非覆盖），若不先减自己，重复部署会让数组元素翻倍。
+	//     map/标量减后重merge结果不变，此步对它们是安全的 no-op。
+	if force && util.FileExists(targetPath) {
+		_ = s.removeConfigKeysFromTarget(targetPath, cfgFragment)
+	}
+
 	// 8. 实际合并写入(由 format 决定 JSON/YAML/TOML 分支)
 	if err := util.MergeConfigToFile(targetPath, format, cfgFragment); err != nil {
 		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("合并写入失败: %v", err))
@@ -877,21 +884,6 @@ func (s *DeployService) deployPrompt(resource *model.Resource, targetPath string
 	return targetPath, nil
 }
 
-// flatKeys 把嵌套 map 的所有 key 拍平(顶层 + 一层子键,如 mcpServers 的子键)
-// 用于冲突检测: 一次部署实际"占用了"哪些 key,撤销时要精准删除
-func flatKeys(m map[string]interface{}) map[string]bool {
-	out := map[string]bool{}
-	for k, v := range m {
-		out[k] = true
-		if sub, ok := v.(map[string]interface{}); ok {
-			for sk := range sub {
-				out[sk] = true
-			}
-		}
-	}
-	return out
-}
-
 // pickLinkPath 选择 link_path: 优先 mcpServers 子键下第一项,否则顶层第一项
 func pickLinkPath(m map[string]interface{}) string {
 	if servers, ok := m["mcpServers"].(map[string]interface{}); ok {
@@ -907,34 +899,40 @@ func pickLinkPath(m map[string]interface{}) string {
 
 // configsConflict 按"相同位置相同 key"的路径树语义判断两个 config 片段是否冲突。
 //
-// 规则(与 util.DeepMerge 的覆盖语义一致):
+// 规则(与 util.DeepMerge 的合并语义对称):
 //   - 沿相同路径下行,某一层两边都存在同一个 key 时:
-//       · 两边该 key 的值【都是 map】 → 不是冲突点,继续向更深一层递归比较
-//       · 否则(任一方为标量/数组,或类型不一致) → 该位置发生覆盖,即【冲突】
+//       · 两边该 key 的值【都是 map】 → 可深度合并,继续向更深一层递归比较
+//       · 两边该 key 的值【都是 array】 → 可拼接合并,不冲突(数组永不冲突)
+//       · 否则(任一方为标量,或一方 map/array 另一方非同类) → 该位置发生覆盖,即【冲突】
 //   - 某层 key 不同 → 该分支分叉,不再深入(不冲突)
 //
 // 示例:
-//   {a:{a1:{...a51,a52}}} vs {a:{a1:{...a53}}}      → a→a1 都是 map 继续深入,
-//        最内层 a51/a52 与 a53 无同名 key → 不冲突
-//   {a:{a1:{...}}}       vs {a:{b1:{...}}}          → a 同名且都是 map 深入,
-//        a1≠b1 分叉 → 不冲突
-//   {a:{a1:1}}           vs {a:{a1:2}}              → a 深入,a1 同名但值非 map → 冲突
+//   {a:{a1:[{a51}]}}     vs {a:{a1:[{a52}]}}        → a 深入, a1 两边都是数组 → 拼接, 不冲突
+//   {a:{a1:{...}}}       vs {a:{b1:{...}}}          → a 同名且都是 map 深入, a1≠b1 分叉 → 不冲突
+//   {a:{a1:1}}           vs {a:{a1:2}}              → a 深入, a1 同名但都是标量 → 冲突
+//   {a:{a1:{...}}}       vs {a:{a1:[...]}}          → a1 一方 map 一方 array → 类型不一致, 冲突
 func configsConflict(a, b map[string]interface{}) bool {
 	for k, av := range a {
 		bv, ok := b[k]
 		if !ok {
 			continue // 该位置 b 没有同名 key → 分叉,跳过
 		}
-		amap, aOk := av.(map[string]interface{})
-		bmap, bOk := bv.(map[string]interface{})
-		if aOk && bOk {
+		amap, aMapOk := av.(map[string]interface{})
+		bmap, bMapOk := bv.(map[string]interface{})
+		if aMapOk && bMapOk {
 			// 两边都是 map → 继续向更深一层比较
 			if configsConflict(amap, bmap) {
 				return true
 			}
 			continue
 		}
-		// 同名 key 但至少一方不是 map → 覆盖,冲突
+		_, aArrOk := av.([]interface{})
+		_, bArrOk := bv.([]interface{})
+		if aArrOk && bArrOk {
+			// 两边都是 array → 拼接合并,不冲突
+			continue
+		}
+		// 同名 key 但非(同为 map / 同为 array) → 覆盖,冲突
 		return true
 	}
 	return false
@@ -992,6 +990,9 @@ func (s *DeployService) findConfigConflicts(targetPath, selfResourceID string, n
 			continue
 		}
 		for _, item := range items {
+			if item.ResourceID == selfResourceID {
+				continue
+			}
 			if seen[item.ResourceID] {
 				continue
 			}
@@ -1090,8 +1091,7 @@ func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[st
 	if err != nil {
 		return err
 	}
-	keysToRemove := flatKeys(cfg)
-	if len(keysToRemove) == 0 {
+	if len(cfg) == 0 {
 		return nil
 	}
 
@@ -1105,7 +1105,7 @@ func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[st
 		if err := json.Unmarshal(std, &obj); err != nil {
 			return err
 		}
-		deleteNestedKeys(obj, keysToRemove)
+		subtractConfig(obj, cfg)
 		out, err := json.MarshalIndent(obj, "", "  ")
 		if err != nil {
 			return err
@@ -1118,7 +1118,7 @@ func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[st
 		}
 		rootMap := util.PickRootMapping(&root)
 		if rootMap != nil {
-			deleteNestedKeysFromYAML(rootMap, keysToRemove)
+			subtractConfigFromYAML(rootMap, cfg)
 		}
 		var buf bytes.Buffer
 		enc := yamlv3.NewEncoder(&buf)
@@ -1133,7 +1133,7 @@ func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[st
 		if err := toml.Unmarshal(data, &obj); err != nil {
 			return err
 		}
-		deleteNestedKeys(obj, keysToRemove)
+		subtractConfig(obj, cfg)
 		out, err := toml.Marshal(obj)
 		if err != nil {
 			return err
@@ -1143,60 +1143,264 @@ func (s *DeployService) removeConfigKeysFromTarget(targetPath string, cfg map[st
 	return nil
 }
 
-// deleteNestedKeys 从 obj 中删除 keysToRemove 中的 key(顶层 + 一层子键)
-// 顶层命中直接删除;否则尝试从 mcpServers 等子映射中删除(兼容历史 MCP 数据)
-func deleteNestedKeys(obj map[string]interface{}, keysToRemove map[string]bool) {
-	if obj == nil {
+// subtractConfig 从 target 中按路径树精确相减 frag 写入的内容（与 util.DeepMerge 对称）。
+//
+// 规则:
+//   - 两边同 key 且都是 map → 递归相减;子 map 减空后才删除该父 key（保留有兄弟的父节点）
+//   - 两边同 key 且都是 array → 按值逐个移除 frag 的元素（拼接的逆操作）;数组减空后删除该 key
+//   - 同 key 但类型不一致（标量/类型不匹配）→ 删除该 key
+//   - target 中 frag 没有的 key → 保留不动
+//
+// 这保证多个 config 合并到同一深层路径时，移除其一只删自己的贡献，
+// 不会误删共享父节点下其他 config 的兄弟 key / 数组元素。
+func subtractConfig(target, frag map[string]interface{}) {
+	if target == nil || frag == nil {
 		return
 	}
-	for k := range keysToRemove {
-		if _, ok := obj[k]; ok {
-			delete(obj, k)
+	for k, fv := range frag {
+		tv, ok := target[k]
+		if !ok {
 			continue
 		}
-		// 兼容历史:从所有子映射中删除
-		for _, v := range obj {
-			if sub, ok := v.(map[string]interface{}); ok {
-				delete(sub, k)
+		fMap, fMapOk := fv.(map[string]interface{})
+		tMap, tMapOk := tv.(map[string]interface{})
+		if fMapOk && tMapOk {
+			subtractConfig(tMap, fMap)
+			if len(tMap) == 0 {
+				delete(target, k)
 			}
+			continue
 		}
+		fArr, fArrOk := fv.([]interface{})
+		tArr, tArrOk := tv.([]interface{})
+		if fArrOk && tArrOk {
+			rest := subtractArray(tArr, fArr)
+			if len(rest) == 0 {
+				delete(target, k)
+			} else {
+				target[k] = rest
+			}
+			continue
+		}
+		delete(target, k)
 	}
 }
 
-// deleteNestedKeysFromYAML 从 YAML mapping 节点中删除 key(顶层 + 一层子键)
-func deleteNestedKeysFromYAML(m *yamlv3.Node, keysToRemove map[string]bool) {
-	if m.Kind != yamlv3.MappingNode {
-		return
+// configContains 深度子集校验:target 是否完整包含 frag 描述的所有路径与值。
+// 是 subtractConfig 的"只读版"——用于部署健康检查,判断资源当初写入的
+// 整棵嵌套结构是否仍存在于目标文件中(深层 key 被改/删都应判 broken)。
+//   - frag 的 map → target 同 key 必须是 map 且递归包含
+//   - frag 的 array → target 同 key 必须是 array 且按值(looseEqual)逐个包含
+//     (拼接合并语义:frag 每个元素都能在 target 中一对一找到)
+//   - frag 的标量 → target 同 key 必须 looseEqual
+func configContains(target, frag map[string]interface{}) bool {
+	if frag == nil {
+		return true
 	}
-	// 先收集要删除的 key 在 Content 中的下标(从大到小删除,避免下标位移)
-	type kv struct{ keyIdx, valIdx int }
-	var toDelete []kv
-	for i := 0; i < len(m.Content); i += 2 {
-		k := m.Content[i].Value
-		if keysToRemove[k] {
-			toDelete = append([]kv{{i, i + 1}}, toDelete...) // 倒序
+	if target == nil {
+		return false
+	}
+	for k, fv := range frag {
+		tv, ok := target[k]
+		if !ok {
+			return false
 		}
-	}
-	for _, d := range toDelete {
-		m.Content = append(m.Content[:d.keyIdx], m.Content[d.valIdx+1:]...)
-	}
-	// 兼容历史:扫一遍剩余的子 mapping
-	for i := 0; i < len(m.Content); i += 2 {
-		val := m.Content[i+1]
-		if val.Kind != yamlv3.MappingNode {
+		fMap, fMapOk := fv.(map[string]interface{})
+		if fMapOk {
+			tMap, tMapOk := tv.(map[string]interface{})
+			if !tMapOk || !configContains(tMap, fMap) {
+				return false
+			}
 			continue
 		}
-		// 子键删除同样倒序
-		var delIdx []int
-		for j := 0; j < len(val.Content); j += 2 {
-			if keysToRemove[val.Content[j].Value] {
-				delIdx = append([]int{j}, delIdx...)
+		fArr, fArrOk := fv.([]interface{})
+		if fArrOk {
+			tArr, tArrOk := tv.([]interface{})
+			if !tArrOk || !arrayContains(tArr, fArr) {
+				return false
 			}
+			continue
 		}
-		for _, j := range delIdx {
-			val.Content = append(val.Content[:j], val.Content[j+2:]...)
+		if !looseEqual(tv, fv) {
+			return false
 		}
 	}
+	return true
+}
+
+// arrayContains 判断 target 数组是否按值(looseEqual)一对一包含 frag 的每个元素。
+func arrayContains(target, frag []interface{}) bool {
+	used := make([]bool, len(target))
+	for _, fe := range frag {
+		found := false
+		for i := range target {
+			if used[i] {
+				continue
+			}
+			if looseEqual(target[i], fe) {
+				used[i] = true
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// subtractArray 从 target 数组中按值移除 frag 的每个元素（拼接合并的逆操作）。
+// 对 frag 中的每个元素,在 target 中找到第一个值相等的元素删除（一对一,
+// 重复元素只删等量的份数）。值相等用 looseEqual 做跨格式(JSON float64 / YAML int)归一比较。
+func subtractArray(target, frag []interface{}) []interface{} {
+	used := make([]bool, len(target))
+	for _, fe := range frag {
+		for i := range target {
+			if used[i] {
+				continue
+			}
+			if looseEqual(target[i], fe) {
+				used[i] = true
+				break
+			}
+		}
+	}
+	rest := make([]interface{}, 0, len(target))
+	for i, e := range target {
+		if !used[i] {
+			rest = append(rest, e)
+		}
+	}
+	return rest
+}
+
+// looseEqual 跨格式宽松深度相等:数字统一按 float64 比较(JSON 解析为 float64,
+// YAML/TOML 可能为 int/int64),map/slice 递归,其余用 ==。
+func looseEqual(a, b interface{}) bool {
+	an, aok := toFloat(a)
+	bn, bok := toFloat(b)
+	if aok && bok {
+		return an == bn
+	}
+	am, amok := a.(map[string]interface{})
+	bm, bmok := b.(map[string]interface{})
+	if amok && bmok {
+		if len(am) != len(bm) {
+			return false
+		}
+		for k, av := range am {
+			bv, ok := bm[k]
+			if !ok || !looseEqual(av, bv) {
+				return false
+			}
+		}
+		return true
+	}
+	as, asok := a.([]interface{})
+	bs, bsok := b.([]interface{})
+	if asok && bsok {
+		if len(as) != len(bs) {
+			return false
+		}
+		for i := range as {
+			if !looseEqual(as[i], bs[i]) {
+				return false
+			}
+		}
+		return true
+	}
+	return a == b
+}
+
+// toFloat 把各种数值类型归一为 float64
+func toFloat(v interface{}) (float64, bool) {
+	switch n := v.(type) {
+	case float64:
+		return n, true
+	case float32:
+		return float64(n), true
+	case int:
+		return float64(n), true
+	case int64:
+		return float64(n), true
+	case int32:
+		return float64(n), true
+	default:
+		return 0, false
+	}
+}
+
+// subtractConfigFromYAML 是 subtractConfig 的 yaml.Node 版本（保留注释/格式/key 顺序）。
+// m 为 mapping 节点；frag 为待相减的资源片段。
+func subtractConfigFromYAML(m *yamlv3.Node, frag map[string]interface{}) {
+	if m == nil || m.Kind != yamlv3.MappingNode {
+		return
+	}
+	// 倒序收集要删除的 key 下标（避免删除时下标位移）
+	var delIdx []int
+	for i := 0; i < len(m.Content); i += 2 {
+		key := m.Content[i].Value
+		fv, ok := frag[key]
+		if !ok {
+			continue
+		}
+		val := m.Content[i+1]
+		fMap, fMapOk := fv.(map[string]interface{})
+		if fMapOk && val.Kind == yamlv3.MappingNode {
+			// 两边都是 map → 递归;子 map 减空后再删该父 key
+			subtractConfigFromYAML(val, fMap)
+			if len(val.Content) == 0 {
+				delIdx = append([]int{i}, delIdx...)
+			}
+			continue
+		}
+		fArr, fArrOk := fv.([]interface{})
+		if fArrOk && val.Kind == yamlv3.SequenceNode {
+			// 两边都是 array → 按值移除 frag 的元素;数组减空后删该 key
+			subtractSequenceNode(val, fArr)
+			if len(val.Content) == 0 {
+				delIdx = append([]int{i}, delIdx...)
+			}
+			continue
+		}
+		// 标量/类型不一致 → 删除
+		delIdx = append([]int{i}, delIdx...)
+	}
+	for _, i := range delIdx {
+		m.Content = append(m.Content[:i], m.Content[i+2:]...)
+	}
+}
+
+// subtractSequenceNode 从 yaml 序列节点中按值移除 frag 的每个元素(拼接的逆操作)。
+// 把每个子节点 Decode 成 interface{} 后用 looseEqual 与 frag 元素一对一比对删除。
+func subtractSequenceNode(seq *yamlv3.Node, frag []interface{}) {
+	if seq == nil || seq.Kind != yamlv3.SequenceNode {
+		return
+	}
+	used := make([]bool, len(seq.Content))
+	for _, fe := range frag {
+		for i, child := range seq.Content {
+			if used[i] {
+				continue
+			}
+			var decoded interface{}
+			if err := child.Decode(&decoded); err != nil {
+				continue
+			}
+			if looseEqual(decoded, fe) {
+				used[i] = true
+				break
+			}
+		}
+	}
+	kept := make([]*yamlv3.Node, 0, len(seq.Content))
+	for i, child := range seq.Content {
+		if !used[i] {
+			kept = append(kept, child)
+		}
+	}
+	seq.Content = kept
 }
 
 // removeConfigResourceKeys 根据资源 ID 读取其 Config 片段，从目标文件中移除该资源写入的所有 key
@@ -1243,12 +1447,30 @@ func (s *DeployService) removeMergeResource(targetPath, resourceID string) {
 	s.removeConfigResourceKeys(targetPath, resourceID)
 }
 
+// isMergeResourceType 返回该资源类型的部署语义是否为 merge（深度合并写入目标文件）。
+// config / prompt → merge；skill / agent → symlink（软链接）。
+//
+// 这是部署语义的唯一真相来源：由资源类型唯一决定。deployment.DeployType 是
+// 跨多个 item 的聚合字段（混合部署时按"全 merge 才算 merge"折叠），且从
+// _meta.json 还原时曾被错误推断，不能作为单个 item 行为的判据。
+func isMergeResourceType(t string) bool {
+	return t == "config" || t == "prompt"
+}
+
 // checkItemHealth 检查单个部署明细的健康状态
 func (s *DeployService) checkItemHealth(deployment *model.Deployment, item *model.DeploymentItem) string {
-	if deployment.DeployType == "merge" {
-		// 区分 prompt / config: prompt 按分隔符判定,config 按 key 判定
-		// 资源已不存在时无法判定,默认走 config 兼容路径
-		r, _ := s.resourceRepo.GetResourceByID(item.ResourceID)
+	// 部署语义按资源类型判定，而非 deployment.DeployType（见 isMergeResourceType 注释）。
+	r, _ := s.resourceRepo.GetResourceByID(item.ResourceID)
+	var isMerge bool
+	if r != nil {
+		isMerge = isMergeResourceType(r.Type)
+	} else {
+		// 资源已被删除，无法按类型判定，回退到 deployment 记录
+		isMerge = deployment.DeployType == "merge"
+	}
+
+	if isMerge {
+		// prompt: 按分隔符标记判定
 		if r != nil && r.Type == "prompt" {
 			data, err := os.ReadFile(deployment.TargetPath)
 			if err != nil {
@@ -1277,10 +1499,20 @@ func (s *DeployService) checkItemHealth(deployment *model.Deployment, item *mode
 		if err != nil || settings == nil {
 			return "broken"
 		}
+		// 用资源自身的完整 config 片段对目标做深度子集校验:
+		// 资源写入目标的是整棵嵌套路径(如 a.a1...a52),只校验顶层 key
+		// 会漏判"深层 key 被改掉/删掉"的情况。
+		frag := s.readConfigFragmentByID(item.ResourceID)
+		if len(frag) > 0 {
+			if configContains(settings, frag) {
+				return "ok"
+			}
+			return "broken"
+		}
+		// 兜底(读不到资源片段时):退回旧的顶层/一层子 key 存在性判断
 		if _, exists := settings[item.LinkPath]; exists {
 			return "ok"
 		}
-		// 兼容历史:扫所有子映射
 		for _, v := range settings {
 			if sub, ok := v.(map[string]interface{}); ok {
 				if _, exists := sub[item.LinkPath]; exists {
@@ -1475,13 +1707,22 @@ func (s *DeployService) RestoreFromMeta(targetPath, aliasID string) {
 
 	aliasPtr := &aliasID
 	for _, entries := range groupedByDeployID {
-		// 确定 deploy_type
-		deployType := "symlink"
+		// 确定 deploy_type：按资源类型判定（config/prompt=merge, skill/agent=symlink）。
+		// 旧逻辑用 e.Type == "mcp" 判断，但 _meta.json 里 type 存的是资源类型
+		// （"config" 等），永远匹配不上，导致 config 部署被错还原成 symlink。
+		// 与 finalDeployType 同规则：全为 merge 才算 merge，混合则 symlink。
+		hasMerge := false
+		hasSymlink := false
 		for _, e := range entries {
-			if e.Type == "mcp" {
-				deployType = "merge"
-				break
+			if isMergeResourceType(e.Type) {
+				hasMerge = true
+			} else {
+				hasSymlink = true
 			}
+		}
+		deployType := "symlink"
+		if hasMerge && !hasSymlink {
+			deployType = "merge"
 		}
 
 		// 创建新的 deployment 记录

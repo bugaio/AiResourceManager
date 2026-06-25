@@ -53,9 +53,9 @@ const filteredAliases = computed(() => {
   return aliasStore.aliases.filter(a => a.name.toLowerCase().includes(keyword))
 })
 
-/** 返回资源页 */
+/** 返回来源资源模块（currentType 仍保留进入前的类型，如 config） */
 function goBack() {
-  router.push('/resources')
+  router.push(`/${uiStore.currentType}`)
 }
 
 /** 打开新建对话框 */
