@@ -2580,17 +2580,37 @@ func (s *DeployService) ListPresetGroupDrifts(presetID string) (map[string]model
 
 		subTypes := typesWithSubPath(g)
 		pending, stale := 0, 0
-		// 该路径组配了子路径的每种类型，逐一比对
-		for rtype := range subTypes {
+		var missingTypes []string
+		// 遍历 preset 实际拥有资源的每种类型：
+		//   - 路径组配了该类型子路径 → 正常比对 pending/stale
+		//   - 路径组【未配】该类型子路径 → 该类型资源无处部署，记为 missing，
+		//     并把这些资源计入 pending（驱动侧栏标红：「未配置」需先补路径）
+		for _, rtype := range presetTypeOrder {
 			expected := map[string]bool{}
 			for _, r := range byType[rtype] {
 				expected[r.ID] = true
+			}
+			if len(expected) == 0 {
+				continue
+			}
+			if !subTypes[rtype] {
+				missingTypes = append(missingTypes, rtype)
+				pending += len(expected)
+				continue
 			}
 			deployed := deployedByType[rtype]
 			for rid := range expected {
 				if !deployed[rid] {
 					pending++
 				}
+			}
+		}
+		// 残留：该路径组已部署但已不在 preset 的资源（仅在配了子路径的类型上统计）
+		for rtype := range subTypes {
+			deployed := deployedByType[rtype]
+			expected := map[string]bool{}
+			for _, r := range byType[rtype] {
+				expected[r.ID] = true
 			}
 			for rid := range deployed {
 				if !expected[rid] {
@@ -2599,10 +2619,11 @@ func (s *DeployService) ListPresetGroupDrifts(presetID string) (map[string]model
 			}
 		}
 		result[gid] = model.PresetGroupDrift{
-			GroupID:   gid,
-			GroupName: g.Name,
-			Pending:   pending,
-			Stale:     stale,
+			GroupID:      gid,
+			GroupName:    g.Name,
+			Pending:      pending,
+			Stale:        stale,
+			MissingTypes: missingTypes,
 		}
 	}
 	return result, nil

@@ -29,6 +29,9 @@ type PresetGroupDrift struct {
 	GroupName string `json:"group_name"`
 	Pending   int    `json:"pending"` // preset 已有但该路径组尚未部署的资源数（含缺失类型）
 	Stale     int    `json:"stale"`   // 该路径组残留但已不在 preset 的资源数
+	// MissingTypes preset 含该类型资源、但路径组未配置对应子路径的类型列表。
+	// 这类资源无法部署（没有目标路径），需先「编辑路径组」补全子路径 → 转为可重新部署。
+	MissingTypes []string `json:"missing_types,omitempty"`
 }
 
 // PresetTargetStatus preset 在某路径组下、单个类型子路径的部署状态

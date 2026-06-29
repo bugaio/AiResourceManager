@@ -12,6 +12,8 @@ const props = defineProps<{
   visible: boolean
   mode: 'create' | 'edit'
   pathGroup?: PathGroup | null
+  /** 需强制填写的子路径类型（侧栏「未配置」补全场景传入），如 ['config'] */
+  requiredTypes?: string[]
 }>()
 
 const emit = defineEmits<{
@@ -42,6 +44,17 @@ const rules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
 }
 
+/** 某类型是否被要求必填（补全「未配置」场景） */
+const TYPE_PATH_KEY: Record<string, 'skill_path' | 'agent_path' | 'config_path' | 'prompt_path'> = {
+  skill: 'skill_path', agent: 'agent_path', config: 'config_path', prompt: 'prompt_path',
+}
+const TYPE_LABEL: Record<string, string> = {
+  skill: 'Skill', agent: 'Agent', config: 'Config', prompt: 'Prompt',
+}
+function isRequired(type: string): boolean {
+  return !!props.requiredTypes?.includes(type)
+}
+
 watch(
   () => props.visible,
   (val) => {
@@ -66,6 +79,15 @@ watch(
 
 async function handleSubmit() {
   if (!formRef.value) return
+
+  // 补全「未配置」场景：被要求必填的类型子路径不得为空
+  for (const t of props.requiredTypes || []) {
+    const key = TYPE_PATH_KEY[t]
+    if (key && !form[key].trim()) {
+      ElMessage.warning(`请填写 ${TYPE_LABEL[t] || t} 路径`)
+      return
+    }
+  }
 
   const err = validatePathGroupPaths(form)
   if (err) {
@@ -128,22 +150,25 @@ async function handleSubmit() {
       <el-form-item v-if="!isRandomName || bindAlias" label="名称" prop="name">
         <el-input v-model="form.name" placeholder="输入路径组名称" maxlength="50" />
       </el-form-item>
-      <el-form-item label="Skill 路径">
+      <el-form-item label="Skill 路径" :required="isRequired('skill')">
         <el-input v-model="form.skill_path" placeholder="目录路径（支持 ~）" />
       </el-form-item>
-      <el-form-item label="Agent 路径">
+      <el-form-item label="Agent 路径" :required="isRequired('agent')">
         <el-input v-model="form.agent_path" placeholder="目录路径（支持 ~）" />
       </el-form-item>
-      <el-form-item label="Config 路径">
+      <el-form-item label="Config 路径" :required="isRequired('config')">
         <el-input
           v-model="form.config_path"
           placeholder="配置文件 .json/.jsonc/.yaml/.yml/.toml"
         />
       </el-form-item>
-      <el-form-item label="Prompt 路径">
+      <el-form-item label="Prompt 路径" :required="isRequired('prompt')">
         <el-input v-model="form.prompt_path" placeholder="Markdown 文件 .md" />
       </el-form-item>
-      <div class="text-xs text-gray-400">至少填写一个子路径</div>
+      <div v-if="requiredTypes && requiredTypes.length > 0" class="text-xs text-amber-500">
+        Preset 新增了 {{ requiredTypes.map((t) => TYPE_LABEL[t] || t).join('、') }} 类型资源，请补全对应子路径后保存
+      </div>
+      <div v-else class="text-xs text-gray-400">至少填写一个子路径</div>
 
       <!-- 随机名路径组：绑定别名开关 -->
       <div v-if="isRandomName" class="flex items-center gap-2 mt-3 pt-3 border-t border-gray-100 dark:border-gray-700">

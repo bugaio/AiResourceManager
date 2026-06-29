@@ -40,6 +40,8 @@ const editingPreset = ref<Preset | null>(null)
 const pathGroupFormVisible = ref(false)
 const pathGroupFormMode = ref<'create' | 'edit'>('create')
 const editingPathGroup = ref<PathGroup | null>(null)
+/** 编辑表单要求必填的类型（补全「未配置」场景） */
+const pathGroupRequiredTypes = ref<string[]>([])
 
 onMounted(() => {
   presetStore.fetchPresets()
@@ -101,6 +103,29 @@ function toggleGroupExpand(groupID: string) {
   if (s.has(groupID)) s.delete(groupID)
   else s.add(groupID)
   expandedGroups.value = s
+}
+
+/** 点击路径组主行：「未配置」→ 打开编辑表单补全缺失子路径；否则展开/收起 */
+function handleGroupRowClick(g: PathGroup) {
+  const missing = groupMissingTypes(g.id)
+  if (missing.length > 0) {
+    openEditPathGroup(g, missing)
+    return
+  }
+  toggleGroupExpand(g.id)
+}
+
+/** 打开编辑路径组表单（requiredTypes 非空时进入补全模式） */
+function openEditPathGroup(g: PathGroup, requiredTypes: string[] = []) {
+  pathGroupFormMode.value = 'edit'
+  editingPathGroup.value = g
+  pathGroupRequiredTypes.value = requiredTypes
+  pathGroupFormVisible.value = true
+}
+
+/** 路径组表单保存成功后刷新：补全子路径后漂移会从「未配置」翻转为「未同步」 */
+async function handlePathGroupSaved() {
+  await Promise.all([pathGroupStore.fetchPathGroups(), presetStore.fetchPresets()])
 }
 
 /** 点击已部署 preset 项，打开管理对话框（按路径组维度，含缺失类型漂移） */
@@ -277,24 +302,38 @@ function deployDriftCount(groupID: string, item: GroupDeployedPreset): number {
   return (d.pending || 0) + (d.stale || 0)
 }
 
+/** 该路径组下所有已部署 preset 缺失子路径的类型并集（驱动「未配置」状态与补全表单） */
+function groupMissingTypes(groupID: string): string[] {
+  const items = deployedPresetsByGroup.value[groupID] || []
+  const set = new Set<string>()
+  for (const item of items) {
+    const d = item.preset.group_drifts?.[groupID]
+    for (const t of d?.missing_types || []) set.add(t)
+  }
+  // 固定顺序输出
+  return ['skill', 'agent', 'config', 'prompt'].filter((t) => set.has(t))
+}
+
 /**
  * 路径组整体部署状态分类（用于卡片颜色）：
- *   - none      未部署任何 preset            → 灰
- *   - unsynced  存在「普通部署且有漂移」      → 红（最需关注，优先级最高）
- *   - tracking  存在跟踪部署（且无未同步）    → 蓝（柔和）
- *   - synced    仅普通部署且全部同步          → 绿
+ *   - none         未部署任何 preset                      → 灰
+ *   - unconfigured Preset 新增了类型但路径组缺子路径       → 红（需先补路径，优先级最高）
+ *   - unsynced     存在「漂移」（新增未部署 / 残留）        → 红
+ *   - tracking     存在跟踪部署（且无未同步）              → 蓝（柔和）
+ *   - synced       仅普通部署且全部同步                    → 绿
  */
-type GroupDeployState = 'none' | 'unsynced' | 'tracking' | 'synced'
+type GroupDeployState = 'none' | 'unconfigured' | 'unsynced' | 'tracking' | 'synced'
 function groupDeployState(g: PathGroup): GroupDeployState {
   const items = deployedPresetsByGroup.value[g.id] || []
   if (items.length === 0) return 'none'
+  if (groupMissingTypes(g.id).length > 0) return 'unconfigured'
   let hasUnsynced = false
   let hasTracking = false
   for (const item of items) {
     const drift = deployDriftCount(g.id, item)
     if (item.isTracking) hasTracking = true
-    // 普通部署（非跟踪）且有漂移 → 未同步
-    if (!item.isTracking && drift > 0) hasUnsynced = true
+    // 有漂移（含跟踪部署补不齐的新增类型）→ 未同步
+    if (drift > 0) hasUnsynced = true
   }
   if (hasUnsynced) return 'unsynced'
   if (hasTracking) return 'tracking'
@@ -304,6 +343,7 @@ function groupDeployState(g: PathGroup): GroupDeployState {
 /** 卡片 ring（边框）颜色 */
 function groupRingClass(g: PathGroup): string {
   switch (groupDeployState(g)) {
+    case 'unconfigured':
     case 'unsynced':
       return 'ring-rose-300/80 dark:ring-rose-800/60'
     case 'tracking':
@@ -318,6 +358,7 @@ function groupRingClass(g: PathGroup): string {
 /** 卡片背景色 */
 function groupBgClass(g: PathGroup): string {
   switch (groupDeployState(g)) {
+    case 'unconfigured':
     case 'unsynced':
       return 'bg-rose-50/70 dark:bg-rose-950/20'
     case 'tracking':
@@ -332,6 +373,7 @@ function groupBgClass(g: PathGroup): string {
 /** 左侧状态色条颜色 */
 function groupBarClass(g: PathGroup): string {
   switch (groupDeployState(g)) {
+    case 'unconfigured':
     case 'unsynced':
       return 'bg-rose-400 dark:bg-rose-500'
     case 'tracking':
@@ -394,9 +436,7 @@ function handleCreatePathGroup() {
 /** path group 菜单 */
 function handlePathGroupCommand(cmd: string, g: PathGroup) {
   if (cmd === 'edit') {
-    pathGroupFormMode.value = 'edit'
-    editingPathGroup.value = g
-    pathGroupFormVisible.value = true
+    openEditPathGroup(g)
   } else if (cmd === 'delete') {
     confirmDeletePathGroup(g)
   }
@@ -579,7 +619,7 @@ function isRandomGroup(g: PathGroup): boolean {
           <!-- 路径组主行 -->
           <div
             class="flex items-center justify-between gap-2 pl-3 pr-2 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-50/80 dark:hover:bg-gray-800/60 cursor-pointer"
-            @click="toggleGroupExpand(g.id)"
+            @click="handleGroupRowClick(g)"
           >
             <div class="flex-1 min-w-0">
               <div class="flex items-center gap-1.5">
@@ -608,6 +648,12 @@ function isRandomGroup(g: PathGroup): boolean {
                   v-if="(deployedPresetsByGroup[g.id] || []).length > 0"
                   class="text-[10px] bg-green-100 dark:bg-green-900/40 text-green-600 dark:text-green-400 rounded-full px-1.5 flex-shrink-0"
                 >{{ deployedPresetsByGroup[g.id].length }}</span>
+                <!-- 未配置：Preset 新增了类型但路径组缺子路径，点击主行去补全 -->
+                <span
+                  v-if="groupMissingTypes(g.id).length > 0"
+                  class="text-[10px] px-1 rounded bg-rose-100 dark:bg-rose-900/40 text-rose-600 dark:text-rose-400 flex-shrink-0"
+                  :title="`缺少 ${groupMissingTypes(g.id).join('、')} 子路径，点击补全`"
+                >未配置</span>
               </div>
               <div class="text-[10px] text-gray-400 truncate mt-0.5 pl-[18px]">{{ pathGroupBrief(g) }}</div>
             </div>
@@ -703,6 +749,8 @@ function isRandomGroup(g: PathGroup): boolean {
       v-model:visible="pathGroupFormVisible"
       :mode="pathGroupFormMode"
       :path-group="editingPathGroup"
+      :required-types="pathGroupRequiredTypes"
+      @success="handlePathGroupSaved"
     />
   </aside>
 </template>

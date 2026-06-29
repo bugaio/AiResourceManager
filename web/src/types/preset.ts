@@ -28,6 +28,8 @@ export interface PresetGroupDrift {
   pending: number
   /** 该路径组残留但已不在 preset 的资源数 */
   stale: number
+  /** preset 含该类型资源、但路径组未配置对应子路径的类型（需先补路径再部署） */
+  missing_types?: string[]
 }
 
 /** Preset 视图下的资源（带归属信息） */
