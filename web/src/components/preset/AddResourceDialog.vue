@@ -313,7 +313,7 @@ async function handleConfirm() {
   >
     <div class="flex gap-4 h-[480px]">
       <!-- 左侧 -->
-      <div class="flex-1 flex flex-col border border-gray-200 dark:border-gray-700 rounded">
+      <div class="flex-1 min-w-0 flex flex-col border border-gray-200 dark:border-gray-700 rounded">
         <!-- type tab -->
         <div class="flex border-b border-gray-200 dark:border-gray-700">
           <button

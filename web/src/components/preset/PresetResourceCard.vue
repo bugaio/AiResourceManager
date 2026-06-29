@@ -1,6 +1,8 @@
 <script setup lang="ts">
 /** Preset 视图中的资源卡片 — 区分私有 / 关联 */
 import { computed } from 'vue'
+import { ElMessage } from 'element-plus'
+import { openFolder } from '@/api/deploy'
 import type { PresetResource } from '@/types/preset'
 
 const props = defineProps<{
@@ -22,8 +24,18 @@ function handleCommand(cmd: string) {
   if (cmd === 'edit') emit('edit', props.resource)
   else if (cmd === 'editContent') emit('editContent', props.resource)
   else if (cmd === 'viewContent') emit('viewContent', props.resource)
+  else if (cmd === 'reveal') handleReveal()
   else if (cmd === 'delete') emit('delete', props.resource)
   else if (cmd === 'unlink') emit('unlink', props.resource)
+}
+
+/** 在文件管理器中打开资源存储位置 */
+async function handleReveal() {
+  try {
+    await openFolder(props.resource.path)
+  } catch (e: any) {
+    ElMessage.error(e?.message || '打开文件夹失败')
+  }
 }
 
 const formattedTime = computed(() => {
@@ -69,10 +81,12 @@ const formattedTime = computed(() => {
           <el-dropdown-menu v-if="isPrivate">
             <el-dropdown-item command="edit">编辑</el-dropdown-item>
             <el-dropdown-item command="editContent">编辑内容</el-dropdown-item>
+            <el-dropdown-item command="reveal">在文件管理器中打开</el-dropdown-item>
             <el-dropdown-item command="delete" divided>删除</el-dropdown-item>
           </el-dropdown-menu>
           <el-dropdown-menu v-else>
             <el-dropdown-item command="viewContent">查看内容</el-dropdown-item>
+            <el-dropdown-item command="reveal">在文件管理器中打开</el-dropdown-item>
             <el-dropdown-item command="unlink" divided>取消关联</el-dropdown-item>
           </el-dropdown-menu>
         </template>
