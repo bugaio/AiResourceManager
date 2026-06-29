@@ -311,6 +311,12 @@ func (s *DeployService) GetTargets(resourceType string) ([]model.TargetInfo, err
 		}
 
 		for _, d := range deployments {
+			// 隔离：preset 部署是独立单元，仅在 Preset 模块（按 preset_id 查询）展示，
+			// 不能泄漏到 skill/agent/config/prompt 等资源类型模块的目标路径列表。
+			if d.PresetID != nil && *d.PresetID != "" {
+				continue
+			}
+
 			items, err := s.deployRepo.GetDeploymentItems(d.ID)
 			if err != nil {
 				continue
