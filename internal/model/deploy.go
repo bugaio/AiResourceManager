@@ -21,6 +21,9 @@ type DeployResourceStatus struct {
 	Type         string `json:"type"`
 	Deployed     bool   `json:"deployed"` // 已部署到该目标
 	Stale        bool   `json:"stale"`    // 已从 preset 移除但目标仍残留
+	// CurrentPath 该资源当前实际部署到的目标路径（config 多路径场景下用于回显/重新分配）；
+	// 未部署时为空。
+	CurrentPath string `json:"current_path,omitempty"`
 }
 
 // PresetGroupDrift preset 在某路径组下的漂移汇总（运行时计算，附在 Preset 上）

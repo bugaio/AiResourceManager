@@ -79,11 +79,15 @@ type ResourceDeleteBlockedData struct {
 }
 
 // PathSpec 部署 Preset 时手动填写的路径四元组
+//
+// ConfigPaths 为多条 config 目标（手动模式多路径）；ConfigPath 为单条兼容值。
+// 优先使用 ConfigPaths。
 type PathSpec struct {
-	SkillPath  string `json:"skill_path"`
-	AgentPath  string `json:"agent_path"`
-	ConfigPath string `json:"config_path"`
-	PromptPath string `json:"prompt_path"`
+	SkillPath   string   `json:"skill_path"`
+	AgentPath   string   `json:"agent_path"`
+	ConfigPath  string   `json:"config_path"`
+	ConfigPaths []string `json:"config_paths"`
+	PromptPath  string   `json:"prompt_path"`
 }
 
 // DeployPresetReq 部署 Preset 请求
@@ -91,6 +95,10 @@ type DeployPresetReq struct {
 	PathGroupID *string   `json:"path_group_id"` // 选择已有路径组
 	ManualPaths *PathSpec `json:"manual_paths"`  // 或手动填写
 	Track       bool      `json:"track"`         // 是否开启追踪
+	// ConfigAssignments config 资源 ID → 目标路径的分配映射。
+	// 当路径组/手动填写有多条 config 路径时，前端弹窗让每个 config 选定目标后回传。
+	// 单条 config 路径时可为空（后端自动归一到那一条）。
+	ConfigAssignments map[string]string `json:"config_assignments"`
 }
 
 // CreatePrivateResourceReq 创建 Preset 私有资源请求

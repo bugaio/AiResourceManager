@@ -1,11 +1,12 @@
 <script setup lang="ts">
-/** 路径组创建/编辑表单对话框 */
+/** 路径组创建/编辑表单对话框（config 支持多条路径） */
 import { ref, reactive, watch, computed } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import type { FormInstance, FormRules } from 'element-plus'
 import { usePathGroupStore } from '@/stores/pathGroup'
-import { validatePathGroupPaths } from '@/utils/pathFormat'
+import { isConfigFilePath, isDirectoryPath, isPromptFilePath } from '@/utils/pathFormat'
 import { isRandomGroupName } from '@/utils/pathFormat'
+import { summarizeDeploymentsAtPaths, undeployAtPaths } from '@/api/deploy'
 import type { PathGroup } from '@/types/pathGroup'
 
 const props = defineProps<{
@@ -29,7 +30,7 @@ const form = reactive({
   name: '',
   skill_path: '',
   agent_path: '',
-  config_path: '',
+  config_paths: [''] as string[],
   prompt_path: '',
 })
 
@@ -44,15 +45,20 @@ const rules: FormRules = {
   name: [{ required: true, message: '请输入名称', trigger: 'blur' }],
 }
 
-/** 某类型是否被要求必填（补全「未配置」场景） */
-const TYPE_PATH_KEY: Record<string, 'skill_path' | 'agent_path' | 'config_path' | 'prompt_path'> = {
-  skill: 'skill_path', agent: 'agent_path', config: 'config_path', prompt: 'prompt_path',
-}
 const TYPE_LABEL: Record<string, string> = {
   skill: 'Skill', agent: 'Agent', config: 'Config', prompt: 'Prompt',
 }
 function isRequired(type: string): boolean {
   return !!props.requiredTypes?.includes(type)
+}
+
+/** 增删 config 路径输入框 */
+function addConfigPath() {
+  form.config_paths.push('')
+}
+function removeConfigPath(idx: number) {
+  form.config_paths.splice(idx, 1)
+  if (form.config_paths.length === 0) form.config_paths.push('')
 }
 
 watch(
@@ -65,31 +71,60 @@ watch(
       form.name = isRandomGroupName(props.pathGroup.name) ? '' : props.pathGroup.name
       form.skill_path = props.pathGroup.skill_path
       form.agent_path = props.pathGroup.agent_path
-      form.config_path = props.pathGroup.config_path
+      const cps = props.pathGroup.config_paths && props.pathGroup.config_paths.length > 0
+        ? [...props.pathGroup.config_paths]
+        : (props.pathGroup.config_path ? [props.pathGroup.config_path] : [])
+      form.config_paths = cps.length > 0 ? cps : ['']
       form.prompt_path = props.pathGroup.prompt_path
     } else {
       form.name = ''
       form.skill_path = ''
       form.agent_path = ''
-      form.config_path = ''
+      form.config_paths = ['']
       form.prompt_path = ''
     }
   },
 )
+
+/** 校验子路径，返回错误消息（空串表示通过） */
+function validatePaths(): string {
+  const skill = form.skill_path.trim()
+  const agent = form.agent_path.trim()
+  const prompt = form.prompt_path.trim()
+  const configs = form.config_paths.map((p) => p.trim()).filter(Boolean)
+
+  if (!skill && !agent && configs.length === 0 && !prompt) return '至少需要填写一个子路径'
+  if (skill && !isDirectoryPath(skill)) return 'skill_path 必须是目录路径（不能带文件后缀）'
+  if (agent && !isDirectoryPath(agent)) return 'agent_path 必须是目录路径（不能带文件后缀）'
+  if (prompt && !isPromptFilePath(prompt)) return 'prompt_path 后缀必须是 .md'
+  for (const c of configs) {
+    if (!isConfigFilePath(c)) return 'config 路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml'
+  }
+  // config 路径去重检测
+  if (new Set(configs).size !== configs.length) return 'config 路径有重复'
+  return ''
+}
 
 async function handleSubmit() {
   if (!formRef.value) return
 
   // 补全「未配置」场景：被要求必填的类型子路径不得为空
   for (const t of props.requiredTypes || []) {
-    const key = TYPE_PATH_KEY[t]
-    if (key && !form[key].trim()) {
+    if (t === 'config') {
+      if (form.config_paths.every((p) => !p.trim())) {
+        ElMessage.warning('请填写 Config 路径')
+        return
+      }
+      continue
+    }
+    const key = (t + '_path') as 'skill_path' | 'agent_path' | 'prompt_path'
+    if (!form[key].trim()) {
       ElMessage.warning(`请填写 ${TYPE_LABEL[t] || t} 路径`)
       return
     }
   }
 
-  const err = validatePathGroupPaths(form)
+  const err = validatePaths()
   if (err) {
     ElMessage.warning(err)
     return
@@ -106,6 +141,50 @@ async function handleSubmit() {
     return
   }
 
+  const configPaths = form.config_paths.map((p) => p.trim()).filter(Boolean)
+
+  // 编辑模式：检测被删除的 config 子路径下是否有已部署内容，有则询问是否移除
+  if (props.mode === 'edit' && props.pathGroup) {
+    const oldPaths = props.pathGroup.config_paths && props.pathGroup.config_paths.length > 0
+      ? props.pathGroup.config_paths
+      : (props.pathGroup.config_path ? [props.pathGroup.config_path] : [])
+    const removed = oldPaths.filter((p) => p && !configPaths.includes(p))
+    if (removed.length > 0) {
+      let summary: Record<string, string[]> = {}
+      try {
+        summary = await summarizeDeploymentsAtPaths(removed)
+      } catch {
+        summary = {}
+      }
+      const pathsWithContent = Object.keys(summary)
+      if (pathsWithContent.length > 0) {
+        const detail = pathsWithContent
+          .map((p) => `${p}\n    └ ${summary[p].join('、')}`)
+          .join('\n')
+        try {
+          await ElMessageBox.confirm(
+            `以下被删除的 config 路径下有已部署内容，保存将一并移除这些部署：\n\n${detail}`,
+            '移除已部署内容',
+            {
+              confirmButtonText: '确定移除',
+              cancelButtonText: '取消',
+              type: 'warning',
+              customClass: 'whitespace-pre-line',
+            },
+          )
+        } catch {
+          return // 用户取消：不保存、不移除
+        }
+        try {
+          await undeployAtPaths(pathsWithContent)
+        } catch (e: any) {
+          ElMessage.error(e?.message || '移除部署内容失败')
+          return
+        }
+      }
+    }
+  }
+
   submitting.value = true
   try {
     if (props.mode === 'create') {
@@ -113,7 +192,7 @@ async function handleSubmit() {
         name: finalName,
         skill_path: form.skill_path.trim(),
         agent_path: form.agent_path.trim(),
-        config_path: form.config_path.trim(),
+        config_paths: configPaths,
         prompt_path: form.prompt_path.trim(),
       })
       ElMessage.success('路径组创建成功')
@@ -122,7 +201,7 @@ async function handleSubmit() {
         name: finalName,
         skill_path: form.skill_path.trim(),
         agent_path: form.agent_path.trim(),
-        config_path: form.config_path.trim(),
+        config_paths: configPaths,
         prompt_path: form.prompt_path.trim(),
       })
       ElMessage.success('路径组更新成功')
@@ -156,11 +235,39 @@ async function handleSubmit() {
       <el-form-item label="Agent 路径" :required="isRequired('agent')">
         <el-input v-model="form.agent_path" placeholder="目录路径（支持 ~）" />
       </el-form-item>
+      <!-- Config 多路径：每行一个输入框，末行后带「+」可继续添加 -->
       <el-form-item label="Config 路径" :required="isRequired('config')">
-        <el-input
-          v-model="form.config_path"
-          placeholder="配置文件 .json/.jsonc/.yaml/.yml/.toml"
-        />
+        <div class="w-full flex flex-col gap-2">
+          <div
+            v-for="(_, idx) in form.config_paths"
+            :key="idx"
+            class="flex items-center gap-2"
+          >
+            <el-input
+              v-model="form.config_paths[idx]"
+              placeholder="配置文件 .json/.jsonc/.yaml/.yml/.toml"
+            />
+            <el-button
+              v-if="form.config_paths.length > 1"
+              text
+              :icon="undefined"
+              class="!px-2 text-gray-400 hover:!text-red-500"
+              title="删除此路径"
+              @click="removeConfigPath(idx)"
+            >✕</el-button>
+            <el-button
+              v-if="idx === form.config_paths.length - 1"
+              text
+              type="primary"
+              class="!px-2"
+              title="添加一条 config 路径"
+              @click="addConfigPath"
+            >＋</el-button>
+          </div>
+          <p class="text-xs text-gray-400">
+            可添加多条 config 路径；部署时为 Preset 中每个 config 资源分别选择目标
+          </p>
+        </div>
       </el-form-item>
       <el-form-item label="Prompt 路径" :required="isRequired('prompt')">
         <el-input v-model="form.prompt_path" placeholder="Markdown 文件 .md" />

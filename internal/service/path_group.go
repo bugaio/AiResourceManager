@@ -37,10 +37,17 @@ func (s *PathGroupService) broadcast(eventType string, data map[string]interface
 	s.hub.Broadcast(msg)
 }
 
-// validateSpec 校验子路径四元组（统一供 Create/Update 用）
-func validateSpec(skill, agent, config, prompt string) error {
+// validateSpec 校验子路径（统一供 Create/Update 用）；configs 为多条 config 路径
+func validateSpec(skill, agent string, configs []string, prompt string) error {
+	hasConfig := false
+	for _, c := range configs {
+		if strings.TrimSpace(c) != "" {
+			hasConfig = true
+			break
+		}
+	}
 	if strings.TrimSpace(skill) == "" && strings.TrimSpace(agent) == "" &&
-		strings.TrimSpace(config) == "" && strings.TrimSpace(prompt) == "" {
+		!hasConfig && strings.TrimSpace(prompt) == "" {
 		return model.NewBizError(model.ErrPathGroupEmpty, "4 个子路径不能全为空")
 	}
 	if msg := util.ValidatePathByType("skill", skill); msg != "" {
@@ -49,11 +56,42 @@ func validateSpec(skill, agent, config, prompt string) error {
 	if msg := util.ValidatePathByType("agent", agent); msg != "" {
 		return model.NewBizError(model.ErrPathGroupBadFormat, "agent_path: "+msg)
 	}
-	if msg := util.ValidatePathByType("config", config); msg != "" {
-		return model.NewBizError(model.ErrPathGroupBadFormat, "config_path: "+msg)
+	for _, c := range configs {
+		if msg := util.ValidatePathByType("config", c); msg != "" {
+			return model.NewBizError(model.ErrPathGroupBadFormat, "config_path: "+msg)
+		}
 	}
 	if msg := util.ValidatePathByType("prompt", prompt); msg != "" {
 		return model.NewBizError(model.ErrPathGroupBadFormat, "prompt_path: "+msg)
+	}
+	return nil
+}
+
+// normalizeConfigPaths 展开 + 清洗 + 去重 + 去空，返回规范化的 config 路径列表
+func normalizeConfigPaths(paths []string) []string {
+	seen := map[string]bool{}
+	out := []string{}
+	for _, p := range paths {
+		if strings.TrimSpace(p) == "" {
+			continue
+		}
+		c := expandAndClean(p)
+		if seen[c] {
+			continue
+		}
+		seen[c] = true
+		out = append(out, c)
+	}
+	return out
+}
+
+// resolveReqConfigPaths 从请求中解析出 config 路径列表（ConfigPaths 优先，回退单值 ConfigPath）
+func resolveReqConfigPaths(configPaths []string, configPath string) []string {
+	if configPaths != nil {
+		return configPaths
+	}
+	if strings.TrimSpace(configPath) != "" {
+		return []string{configPath}
 	}
 	return nil
 }
@@ -76,7 +114,8 @@ func (s *PathGroupService) CreatePathGroup(req *model.CreatePathGroupReq) (*mode
 	if strings.TrimSpace(req.Name) == "" {
 		return nil, model.NewBizError(model.ErrPathGroupBadFormat, "name 不能为空")
 	}
-	if err := validateSpec(req.SkillPath, req.AgentPath, req.ConfigPath, req.PromptPath); err != nil {
+	configPaths := resolveReqConfigPaths(req.ConfigPaths, req.ConfigPath)
+	if err := validateSpec(req.SkillPath, req.AgentPath, configPaths, req.PromptPath); err != nil {
 		return nil, err
 	}
 	exists, err := s.repo.CheckPathGroupNameExists(req.Name, "")
@@ -88,14 +127,14 @@ func (s *PathGroupService) CreatePathGroup(req *model.CreatePathGroupReq) (*mode
 	}
 	now := timeNow()
 	g := &model.PathGroup{
-		ID:         util.NewUUID(),
-		Name:       req.Name,
-		SkillPath:  expandAndClean(req.SkillPath),
-		AgentPath:  expandAndClean(req.AgentPath),
-		ConfigPath: expandAndClean(req.ConfigPath),
-		PromptPath: expandAndClean(req.PromptPath),
-		CreatedAt:  now,
-		UpdatedAt:  now,
+		ID:          util.NewUUID(),
+		Name:        req.Name,
+		SkillPath:   expandAndClean(req.SkillPath),
+		AgentPath:   expandAndClean(req.AgentPath),
+		ConfigPaths: normalizeConfigPaths(configPaths),
+		PromptPath:  expandAndClean(req.PromptPath),
+		CreatedAt:   now,
+		UpdatedAt:   now,
 	}
 	if err := s.repo.InsertPathGroup(g); err != nil {
 		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
@@ -135,7 +174,7 @@ func (s *PathGroupService) UpdatePathGroup(id string, req *model.UpdatePathGroup
 	name := g.Name
 	skill := g.SkillPath
 	agent := g.AgentPath
-	config := g.ConfigPath
+	configs := g.ConfigPaths
 	prompt := g.PromptPath
 	if req.Name != nil {
 		name = *req.Name
@@ -146,8 +185,15 @@ func (s *PathGroupService) UpdatePathGroup(id string, req *model.UpdatePathGroup
 	if req.AgentPath != nil {
 		agent = *req.AgentPath
 	}
-	if req.ConfigPath != nil {
-		config = *req.ConfigPath
+	// config 最终值：ConfigPaths 优先，其次单值 ConfigPath，否则保留原值
+	if req.ConfigPaths != nil {
+		configs = *req.ConfigPaths
+	} else if req.ConfigPath != nil {
+		if strings.TrimSpace(*req.ConfigPath) == "" {
+			configs = []string{}
+		} else {
+			configs = []string{*req.ConfigPath}
+		}
 	}
 	if req.PromptPath != nil {
 		prompt = *req.PromptPath
@@ -156,7 +202,7 @@ func (s *PathGroupService) UpdatePathGroup(id string, req *model.UpdatePathGroup
 	if strings.TrimSpace(name) == "" {
 		return nil, model.NewBizError(model.ErrPathGroupBadFormat, "name 不能为空")
 	}
-	if err := validateSpec(skill, agent, config, prompt); err != nil {
+	if err := validateSpec(skill, agent, configs, prompt); err != nil {
 		return nil, err
 	}
 	if name != g.Name {
@@ -178,9 +224,11 @@ func (s *PathGroupService) UpdatePathGroup(id string, req *model.UpdatePathGroup
 		v := expandAndClean(*req.AgentPath)
 		req.AgentPath = &v
 	}
-	if req.ConfigPath != nil {
-		v := expandAndClean(*req.ConfigPath)
-		req.ConfigPath = &v
+	// config 统一收敛到 ConfigPaths 字段写入（repo 负责同步 config_path 镜像）
+	if req.ConfigPaths != nil || req.ConfigPath != nil {
+		normalized := normalizeConfigPaths(configs)
+		req.ConfigPaths = &normalized
+		req.ConfigPath = nil // 避免 repo 走单值分支，统一由 ConfigPaths 决定
 	}
 	if req.PromptPath != nil {
 		v := expandAndClean(*req.PromptPath)

@@ -339,7 +339,12 @@ func (h *PresetHandler) handleGroupStatus(c *gin.Context) {
 func (h *PresetHandler) handleRedeployGroup(c *gin.Context) {
 	id := c.Param("id")
 	groupID := c.Param("groupID")
-	deployments, err := h.svc.RedeployPresetGroup(id, groupID)
+	// config 多路径场景：前端弹窗回传 config 资源 → 目标路径的分配（可为空）
+	var req struct {
+		ConfigAssignments map[string]string `json:"config_assignments"`
+	}
+	_ = c.ShouldBindJSON(&req) // body 可空，忽略解析错误
+	deployments, err := h.svc.RedeployPresetGroup(id, groupID, req.ConfigAssignments)
 	if err != nil {
 		handleBizError(c, err)
 		return

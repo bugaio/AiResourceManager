@@ -239,11 +239,11 @@ func (s *PresetService) GetPresetGroupStatus(presetID, groupID string) (*model.P
 }
 
 // RedeployPresetGroup 将 preset 以最新全量资源重新部署到指定路径组
-func (s *PresetService) RedeployPresetGroup(presetID, groupID string) ([]model.Deployment, error) {
+func (s *PresetService) RedeployPresetGroup(presetID, groupID string, configAssignments map[string]string) ([]model.Deployment, error) {
 	if s.deploySvc == nil {
 		return nil, model.NewBizError(model.ErrSystemInternal, "deploySvc 未注入")
 	}
-	return s.deploySvc.RedeployPresetGroup(presetID, groupID)
+	return s.deploySvc.RedeployPresetGroup(presetID, groupID, configAssignments)
 }
 
 // LinkResources 关联资源到 preset

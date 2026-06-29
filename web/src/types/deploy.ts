@@ -18,6 +18,8 @@ export interface DeployResourceStatus {
   type: 'skill' | 'agent' | 'config' | 'prompt' | string
   deployed: boolean
   stale: boolean
+  /** 当前实际部署到的目标路径（config 多路径回显/重新分配用），未部署为空 */
+  current_path?: string
 }
 
 /** preset 在某路径组下、单个类型子路径的部署状态 */

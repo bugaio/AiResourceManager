@@ -65,7 +65,7 @@ const deployedPresetsByGroup = computed(() => {
   const map: Record<string, GroupDeployedPreset[]> = {}
   for (const g of pathGroupStore.pathGroups) {
     const groupPaths = new Set(
-      [g.skill_path, g.agent_path, g.config_path, g.prompt_path].filter(Boolean)
+      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean)
     )
     const items: GroupDeployedPreset[] = []
     for (const p of presetStore.presets) {
@@ -152,7 +152,7 @@ async function handleCheckGroup(g: PathGroup) {
   try {
     // 1. 收集该路径组涉及的目标路径
     const targetPaths = new Set<string>(
-      [g.skill_path, g.agent_path, g.config_path, g.prompt_path].filter(Boolean),
+      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean),
     )
 
     // 2. 检查每个目标路径是否还存在；不存在则自动撤销关联部署
@@ -209,10 +209,21 @@ async function handleCheckGroup(g: PathGroup) {
     }
     brokenItemsByPreset.value = newBrokenMap
 
-    if (removedPathsMsg.length === 0 && myBroken.length === 0) {
+    // 5. 除文件层 broken 外，还要看「状态层漂移」：
+    //    该组下任一 preset 有未同步(pending/stale)或未配置(missing_types)，都属异常。
+    //    典型：部署后删掉某条 config 路径 → 文件还在(health=ok)，但状态已漂移，不能报"正常"。
+    let driftCount = 0
+    for (const item of items) {
+      driftCount += deployDriftCount(g.id, item)
+    }
+    const hasMissing = groupMissingTypes(g.id).length > 0
+
+    if (removedPathsMsg.length === 0 && myBroken.length === 0 && driftCount === 0 && !hasMissing) {
       ElMessage.success(`路径组「${g.name}」下所有部署状态正常`)
     } else if (myBroken.length > 0) {
       ElMessage.warning(`路径组「${g.name}」发现 ${myBroken.length} 个异常项，点"修复"还原`)
+    } else if (driftCount > 0 || hasMissing) {
+      ElMessage.warning(`路径组「${g.name}」存在未同步/未配置项，请点击该路径组重新部署`)
     }
   } catch (e: any) {
     ElMessage.error(e?.message || '检查失败')
@@ -465,7 +476,10 @@ function pathGroupBrief(g: PathGroup): string {
   const items: string[] = []
   if (g.skill_path) items.push('skill')
   if (g.agent_path) items.push('agent')
-  if (g.config_path) items.push('config')
+  if ((g.config_paths && g.config_paths.length > 0) || g.config_path) {
+    const n = g.config_paths?.length || (g.config_path ? 1 : 0)
+    items.push(n > 1 ? `config×${n}` : 'config')
+  }
   if (g.prompt_path) items.push('prompt')
   return items.join(' · ')
 }

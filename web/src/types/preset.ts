@@ -60,15 +60,18 @@ export interface UpdatePresetReq {
 export interface DeployPresetReq {
   /** 已有路径组 ID（与 manual_paths 二选一） */
   path_group_id?: string
-  /** 手动填写的 4 个子路径（与 path_group_id 二选一） */
+  /** 手动填写的子路径（与 path_group_id 二选一） */
   manual_paths?: {
     skill_path?: string
     agent_path?: string
     config_path?: string
+    config_paths?: string[]
     prompt_path?: string
   }
   /** 是否启用跟踪 */
   track?: boolean
   /** 强制覆盖（重新部署时使用） */
   force?: boolean
+  /** config 资源 ID → 目标路径分配（多条 config 路径时由弹窗回传） */
+  config_assignments?: Record<string, string>
 }

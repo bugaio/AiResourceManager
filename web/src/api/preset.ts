@@ -136,7 +136,14 @@ export function getPresetGroupStatus(
   return request.get(`/presets/${presetID}/groups/${groupID}/status`)
 }
 
-/** 将 preset 以最新全量资源重新部署到指定路径组（补齐新增类型，如新加的 prompt） */
-export function redeployPresetGroup(presetID: string, groupID: string): Promise<Deployment[]> {
-  return request.post(`/presets/${presetID}/groups/${groupID}/redeploy`)
+/** 将 preset 以最新全量资源重新部署到指定路径组（补齐新增类型，如新加的 prompt）
+ *  configAssignments: config 资源 ID → 目标路径（多条 config 路径时由弹窗回传，可空） */
+export function redeployPresetGroup(
+  presetID: string,
+  groupID: string,
+  configAssignments?: Record<string, string>,
+): Promise<Deployment[]> {
+  return request.post(`/presets/${presetID}/groups/${groupID}/redeploy`, {
+    config_assignments: configAssignments,
+  })
 }

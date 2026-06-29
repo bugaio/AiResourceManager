@@ -34,13 +34,6 @@ const dialogVisible = computed({
   set: (v) => emit('update:visible', v),
 })
 
-/** 类型 → 路径组子路径字段 */
-const TYPE_PATH_KEY: Record<string, keyof PathGroup> = {
-  skill: 'skill_path',
-  agent: 'agent_path',
-  config: 'config_path',
-  prompt: 'prompt_path',
-}
 const TYPE_LABEL: Record<string, string> = {
   skill: 'Skill',
   agent: 'SubAgent',
@@ -69,7 +62,7 @@ function groupDeployments(deployments: Deployment[]): DeployedGroupInfo[] {
   const result: DeployedGroupInfo[] = []
   for (const g of pathGroupStore.pathGroups) {
     const groupPaths = new Set(
-      [g.skill_path, g.agent_path, g.config_path, g.prompt_path].filter(Boolean),
+      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean),
     )
     const matched = deployments.filter((d) => groupPaths.has(d.target_path))
     if (matched.length === 0) continue
@@ -98,8 +91,11 @@ const linkedPresets = computed<LinkedPreset[]>(() => {
 
 /** 把某条 deployment 的 target_path 反查出它对应的资源类型标签 */
 function deploymentTypeLabel(group: PathGroup, dep: Deployment): string {
-  for (const [type, key] of Object.entries(TYPE_PATH_KEY)) {
-    if (group[key] === dep.target_path) return TYPE_LABEL[type] || type
+  if (group.skill_path === dep.target_path) return TYPE_LABEL.skill
+  if (group.agent_path === dep.target_path) return TYPE_LABEL.agent
+  if (group.prompt_path === dep.target_path) return TYPE_LABEL.prompt
+  if ((group.config_paths || []).includes(dep.target_path) || group.config_path === dep.target_path) {
+    return TYPE_LABEL.config
   }
   return ''
 }

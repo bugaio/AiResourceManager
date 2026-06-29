@@ -49,6 +49,17 @@ export function openFolder(path: string): Promise<void> {
   return request.post('/deployments/open-folder', { path })
 }
 
+/** 统计给定目标路径下的部署内容（编辑路径组删 config 路径前用）
+ *  返回 { 路径: [资源名...] }，无部署的路径不出现 */
+export function summarizeDeploymentsAtPaths(paths: string[]): Promise<Record<string, string[]>> {
+  return request.post('/deployments/summarize-paths', { paths })
+}
+
+/** 撤销给定目标路径下的所有部署（确认移除时用） */
+export function undeployAtPaths(paths: string[]): Promise<{ undeployed: number }> {
+  return request.post('/deployments/undeploy-paths', { paths })
+}
+
 /** 资源保存后同步提示子项 —— 只含「包含当前资源」的部署，按路径组分组展示 */
 export interface ResourceDeployTarget {
   preset_id: string

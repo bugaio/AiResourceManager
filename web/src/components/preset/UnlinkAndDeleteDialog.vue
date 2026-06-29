@@ -48,7 +48,7 @@ function groupDeployments(deployments: Deployment[]): DeployedGroupInfo[] {
   const result: DeployedGroupInfo[] = []
   for (const g of pathGroupStore.pathGroups) {
     const groupPaths = new Set(
-      [g.skill_path, g.agent_path, g.config_path, g.prompt_path].filter(Boolean),
+      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean),
     )
     const matched = deployments.filter((d) => groupPaths.has(d.target_path))
     if (matched.length === 0) continue

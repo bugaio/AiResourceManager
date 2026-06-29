@@ -1,15 +1,16 @@
 <script setup lang="ts">
-/** Preset 部署对话框 — 选已有路径组 / 手动填写 */
+/** Preset 部署对话框 — 选已有路径组 / 手动填写（config 支持多路径 + 分配弹窗） */
 import { ref, computed, watch, reactive } from 'vue'
 import { ElMessage } from 'element-plus'
 import { usePathGroupStore } from '@/stores/pathGroup'
 import { deployPreset } from '@/api/preset'
 import { checkConflicts } from '@/api/deploy'
-import { validatePathGroupPaths, genRandomGroupName } from '@/utils/pathFormat'
+import { genRandomGroupName, isConfigFilePath, isDirectoryPath, isPromptFilePath } from '@/utils/pathFormat'
 import type { PresetResource } from '@/types/preset'
 import type { ResourceType } from '@/types/resource'
 import type { Deployment } from '@/types/deploy'
 import PresetDeployConflictDialog from './PresetDeployConflictDialog.vue'
+import ConfigAssignDialog from './ConfigAssignDialog.vue'
 
 const props = defineProps<{
   visible: boolean
@@ -41,9 +42,10 @@ const selectedGroupID = ref<string>('')
 const manualPaths = reactive({
   skill_path: '',
   agent_path: '',
-  config_path: '',
   prompt_path: '',
 })
+/** 手动模式 config 多路径 */
+const manualConfigPaths = ref<string[]>([''])
 const track = ref(false)
 const submitting = ref(false)
 // 手动模式：是否绑定别名（自定义路径组名）。关=用随机组名
@@ -53,8 +55,12 @@ const aliasName = ref('')
 // 部署冲突预检弹窗
 const conflictVisible = ref(false)
 const conflictList = ref<{ type: string; targetPath: string; conflictWith: string; resourceName: string }[]>([])
-// 预检通过后待执行的部署参数(避免重复构造)
-const pendingDeploySpec = ref<{ path_group_id?: string; manual_paths?: any } | null>(null)
+// 预检通过后待执行的部署参数
+const pendingDeploySpec = ref<{ path_group_id?: string; manual_paths?: any; config_assignments?: Record<string, string> } | null>(null)
+// config 分配弹窗
+const assignVisible = ref(false)
+/** 分配完成后的 config 资源 → 目标路径 */
+const configAssignments = ref<Record<string, string>>({})
 
 /** preset 实际包含哪些类型的资源 */
 const presentTypes = computed<Set<ResourceType>>(() => {
@@ -63,23 +69,34 @@ const presentTypes = computed<Set<ResourceType>>(() => {
   return s
 })
 
+/** preset 中的 config 资源 */
+const configResources = computed(() => props.resources.filter((r) => r.type === 'config'))
+
 /** 选中的路径组对象 */
 const selectedGroup = computed(() =>
   pathGroupStore.pathGroups.find((g) => g.id === selectedGroupID.value),
 )
 
-/** 该 preset 已部署到的路径组 ID 集合
- *
- * 判定方式与侧边栏一致：deployment.target_path 命中某路径组的任一子路径，
- * 即视为该 preset 已部署在这个路径组下。
- */
+/** 当前部署目标的 config 路径列表（路径组模式取 config_paths，手动模式取输入数组） */
+const effectiveConfigPaths = computed<string[]>(() => {
+  if (mode.value === 'group') {
+    const g = selectedGroup.value
+    if (!g) return []
+    return (g.config_paths && g.config_paths.length > 0)
+      ? g.config_paths
+      : (g.config_path ? [g.config_path] : [])
+  }
+  return manualConfigPaths.value.map((p) => p.trim()).filter(Boolean)
+})
+
+/** 该 preset 已部署到的路径组 ID 集合 */
 const deployedGroupIDs = computed<Set<string>>(() => {
   const ids = new Set<string>()
   const deps = props.deployments || []
   if (deps.length === 0) return ids
   const targetPaths = new Set(deps.map((d) => d.target_path))
   for (const g of pathGroupStore.pathGroups) {
-    const groupPaths = [g.skill_path, g.agent_path, g.config_path, g.prompt_path].filter(Boolean)
+    const groupPaths = [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean)
     if (groupPaths.some((p) => targetPaths.has(p))) ids.add(g.id)
   }
   return ids
@@ -105,7 +122,7 @@ const missingTypes = computed<string[]>(() => {
   const missing: string[] = []
   if (presentTypes.value.has('skill') && !g.skill_path?.trim()) missing.push('skill')
   if (presentTypes.value.has('agent') && !g.agent_path?.trim()) missing.push('agent')
-  if (presentTypes.value.has('config') && !g.config_path?.trim()) missing.push('config')
+  if (presentTypes.value.has('config') && effectiveConfigPaths.value.length === 0) missing.push('config')
   if (presentTypes.value.has('prompt') && !g.prompt_path?.trim()) missing.push('prompt')
   return missing
 })
@@ -120,6 +137,20 @@ const matchHint = computed(() => {
   return { text: `子路径缺失：${labels}`, cls: 'text-orange-500 dark:text-orange-400' }
 })
 
+/** config 资源数 ≥1 且目标 config 路径 ≥2 时，需要分配 */
+const needAssign = computed(
+  () => configResources.value.length > 0 && effectiveConfigPaths.value.length >= 2,
+)
+
+/** 手动模式 config 增删 */
+function addManualConfig() {
+  manualConfigPaths.value.push('')
+}
+function removeManualConfig(idx: number) {
+  manualConfigPaths.value.splice(idx, 1)
+  if (manualConfigPaths.value.length === 0) manualConfigPaths.value.push('')
+}
+
 watch(
   () => props.visible,
   async (val) => {
@@ -128,17 +159,23 @@ watch(
     selectedGroupID.value = props.preselectGroupID || ''
     manualPaths.skill_path = ''
     manualPaths.agent_path = ''
-    manualPaths.config_path = ''
     manualPaths.prompt_path = ''
+    manualConfigPaths.value = ['']
     track.value = false
     bindAlias.value = false
     aliasName.value = ''
+    configAssignments.value = {}
     await pathGroupStore.fetchPathGroups()
     if (props.preselectGroupID) {
       selectedGroupID.value = props.preselectGroupID
     }
   },
 )
+
+// 目标变化时清空已有分配（避免用旧目标的分配部署到新目标）
+watch([selectedGroupID, manualConfigPaths, mode], () => {
+  configAssignments.value = {}
+}, { deep: true })
 
 async function handleConfirm() {
   // 校验
@@ -149,47 +186,63 @@ async function handleConfirm() {
     }
     const g = selectedGroup.value
     if (!g) return
-    // 校验 preset 涉及的类型在路径组中都有非空路径
     const missing: string[] = []
     if (presentTypes.value.has('skill') && !g.skill_path.trim()) missing.push('skill_path')
     if (presentTypes.value.has('agent') && !g.agent_path.trim()) missing.push('agent_path')
-    if (presentTypes.value.has('config') && !g.config_path.trim()) missing.push('config_path')
+    if (presentTypes.value.has('config') && effectiveConfigPaths.value.length === 0) missing.push('config_path')
     if (presentTypes.value.has('prompt') && !g.prompt_path.trim()) missing.push('prompt_path')
     if (missing.length > 0) {
       ElMessage.warning(`所选路径组缺少: ${missing.join(', ')}`)
       return
     }
   } else {
-    // 仅校验 preset 包含类型对应的字段
-    const candidate = {
-      skill_path: presentTypes.value.has('skill') ? manualPaths.skill_path : '',
-      agent_path: presentTypes.value.has('agent') ? manualPaths.agent_path : '',
-      config_path: presentTypes.value.has('config') ? manualPaths.config_path : '',
-      prompt_path: presentTypes.value.has('prompt') ? manualPaths.prompt_path : '',
+    // 手动模式校验
+    const skill = manualPaths.skill_path.trim()
+    const agent = manualPaths.agent_path.trim()
+    const prompt = manualPaths.prompt_path.trim()
+    const configs = effectiveConfigPaths.value
+    if (presentTypes.value.has('skill') && !skill) { ElMessage.warning('请填写 Skill 路径'); return }
+    if (presentTypes.value.has('agent') && !agent) { ElMessage.warning('请填写 Agent 路径'); return }
+    if (presentTypes.value.has('prompt') && !prompt) { ElMessage.warning('请填写 Prompt 路径'); return }
+    if (presentTypes.value.has('config') && configs.length === 0) { ElMessage.warning('请填写 Config 路径'); return }
+    if (skill && !isDirectoryPath(skill)) { ElMessage.warning('Skill 路径必须是目录'); return }
+    if (agent && !isDirectoryPath(agent)) { ElMessage.warning('Agent 路径必须是目录'); return }
+    if (prompt && !isPromptFilePath(prompt)) { ElMessage.warning('Prompt 路径后缀必须是 .md'); return }
+    for (const c of configs) {
+      if (!isConfigFilePath(c)) { ElMessage.warning('Config 路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml'); return }
     }
-    const err = validatePathGroupPaths(candidate)
-    if (err) {
-      ElMessage.warning(err)
-      return
-    }
-    // 每个所需类型必须有值
-    const missing: string[] = []
-    for (const t of presentTypes.value) {
-      const key = (t + '_path') as keyof typeof candidate
-      if (!candidate[key].trim()) missing.push(key)
-    }
-    if (missing.length > 0) {
-      ElMessage.warning(`手动模式下缺少: ${missing.join(', ')}`)
-      return
-    }
-    // 绑定别名开启时，路径组名称必填
+    if (new Set(configs).size !== configs.length) { ElMessage.warning('Config 路径有重复'); return }
     if (bindAlias.value && !aliasName.value.trim()) {
       ElMessage.warning('请输入路径组名称，或关闭「绑定别名」使用随机组名')
       return
     }
   }
 
-  // 构造部署参数
+  // config 多路径 → 先弹分配窗，让每个 config 选目标
+  if (needAssign.value) {
+    if (Object.keys(configAssignments.value).length === 0) {
+      assignVisible.value = true
+      return
+    }
+  } else if (effectiveConfigPaths.value.length === 1) {
+    // 单条 config 路径：自动分配
+    const only = effectiveConfigPaths.value[0]
+    const map: Record<string, string> = {}
+    for (const r of configResources.value) map[r.id] = only
+    configAssignments.value = map
+  }
+
+  await proceedDeploy()
+}
+
+/** 分配弹窗确认回调 */
+async function handleAssignConfirm(assignments: Record<string, string>) {
+  configAssignments.value = assignments
+  await proceedDeploy()
+}
+
+/** 构造部署参数 → 冲突预检 → 部署 */
+async function proceedDeploy() {
   const deployReq = {
     path_group_id: mode.value === 'group' ? selectedGroupID.value : undefined,
     manual_paths:
@@ -197,15 +250,15 @@ async function handleConfirm() {
         ? {
             skill_path: presentTypes.value.has('skill') ? manualPaths.skill_path.trim() : undefined,
             agent_path: presentTypes.value.has('agent') ? manualPaths.agent_path.trim() : undefined,
-            config_path: presentTypes.value.has('config') ? manualPaths.config_path.trim() : undefined,
+            config_paths: presentTypes.value.has('config') ? effectiveConfigPaths.value : undefined,
             prompt_path: presentTypes.value.has('prompt') ? manualPaths.prompt_path.trim() : undefined,
           }
         : undefined,
     track: track.value,
+    config_assignments: configAssignments.value,
   }
 
-  // 预检 config / prompt 与目标已有内容的冲突(skill/agent 为 symlink,force 覆盖无预检意义)
-  const conflicts = await runConflictCheck(deployReq)
+  const conflicts = await runConflictCheck()
   if (conflicts.length > 0) {
     conflictList.value = conflicts
     pendingDeploySpec.value = deployReq
@@ -216,54 +269,51 @@ async function handleConfirm() {
   await doDeploy(deployReq)
 }
 
-/** 解析某类型对应的目标路径 */
-function resolveTargetPath(deployReq: { path_group_id?: string; manual_paths?: any }, type: ResourceType): string {
-  if (deployReq.path_group_id) {
-    const g = selectedGroup.value
-    if (!g) return ''
-    const map: Record<string, string> = { skill: g.skill_path, agent: g.agent_path, config: g.config_path, prompt: g.prompt_path }
-    return (map[type] || '').trim()
-  }
-  const mp = deployReq.manual_paths || {}
-  const key = `${type}_path` as keyof typeof mp
-  return (mp[key] || '').trim()
-}
-
-/** 预检 config/prompt 资源与目标已有内容冲突,返回需展示的冲突子项
+/** 预检 config/prompt 资源与目标已有内容冲突
  *
- * 每个类型一次批量预检(传该类型全部资源 id);后端用 conflict_for 字段
- * 把每条 existing 冲突精确归属到「本 preset 中的哪个 config/prompt」。
- * 产出结构: { type, targetPath, conflictWith(冲突对象), resourceName(本 preset 触发冲突的资源名) }
+ * config 按各自分配的 target 分别预检；prompt 用单路径批量预检。
  */
-async function runConflictCheck(deployReq: { path_group_id?: string; manual_paths?: any }) {
-  const byType = new Map<ResourceType, string[]>()
-  for (const r of props.resources) {
-    if (r.type !== 'config' && r.type !== 'prompt') continue
-    if (!byType.has(r.type)) byType.set(r.type, [])
-    byType.get(r.type)!.push(r.id)
-  }
-
+async function runConflictCheck() {
   const conflicts: { type: string; targetPath: string; conflictWith: string; resourceName: string }[] = []
-  for (const [type, ids] of byType) {
-    if (ids.length === 0) continue
-    const targetPath = resolveTargetPath(deployReq, type)
+
+  // config：每个资源按分配的 target 单独预检
+  for (const r of configResources.value) {
+    const targetPath = configAssignments.value[r.id]
     if (!targetPath) continue
     try {
-      const resp = await checkConflicts({ resource_ids: ids, target_path: targetPath })
+      const resp = await checkConflicts({ resource_ids: [r.id], target_path: targetPath })
       if (!resp.has_conflict) continue
       for (const c of resp.conflicts) {
-        // 仅 existing(与目标已有内容/已部署资源冲突)需展示; applied/ignored 不展示
         if (c.status !== 'existing') continue
-        // prompt 的 existing 表示该 prompt 自身已部署在目标里(将被覆盖),冲突对象记为「已部署内容」;
-        // config 用后端 conflict_for 归属到具体资源,冲突对象是 resource_name(原始内容/他人资源)
-        const conflictWith = type === 'prompt' ? '已部署内容' : c.resource_name
-        const resourceName = c.conflict_for || c.resource_name
-        conflicts.push({ type, targetPath, conflictWith, resourceName })
+        conflicts.push({
+          type: 'config',
+          targetPath,
+          conflictWith: c.resource_name,
+          resourceName: c.conflict_for || c.resource_name,
+        })
       }
-    } catch {
-      // 预检失败不阻塞部署,交由部署本身报错
+    } catch { /* 预检失败不阻塞 */ }
+  }
+
+  // prompt：单路径批量预检
+  const promptIDs = props.resources.filter((r) => r.type === 'prompt').map((r) => r.id)
+  if (promptIDs.length > 0) {
+    const targetPath = mode.value === 'group'
+      ? (selectedGroup.value?.prompt_path || '').trim()
+      : manualPaths.prompt_path.trim()
+    if (targetPath) {
+      try {
+        const resp = await checkConflicts({ resource_ids: promptIDs, target_path: targetPath })
+        if (resp.has_conflict) {
+          for (const c of resp.conflicts) {
+            if (c.status !== 'existing') continue
+            conflicts.push({ type: 'prompt', targetPath, conflictWith: '已部署内容', resourceName: c.conflict_for || c.resource_name })
+          }
+        }
+      } catch { /* 预检失败不阻塞 */ }
     }
   }
+
   return conflicts
 }
 
@@ -279,11 +329,10 @@ async function handleConflictConfirm() {
  * 手动模式：先用填写的路径创建一个路径组（绑定别名→自定义名，否则随机名），
  * 再按 path_group_id 部署。这样部署一定挂在某个路径组下，侧边栏可正常显示。
  */
-async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any; track?: boolean }) {
+async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any; track?: boolean; config_assignments?: Record<string, string> }) {
   submitting.value = true
   try {
     let groupID = deployReq.path_group_id
-    // 手动模式：先建路径组
     if (!groupID && deployReq.manual_paths) {
       const mp = deployReq.manual_paths
       const name = bindAlias.value ? aliasName.value.trim() : genRandomGroupName()
@@ -291,7 +340,7 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
         name,
         skill_path: mp.skill_path || undefined,
         agent_path: mp.agent_path || undefined,
-        config_path: mp.config_path || undefined,
+        config_paths: mp.config_paths || undefined,
         prompt_path: mp.prompt_path || undefined,
       })
       groupID = g.id
@@ -300,6 +349,7 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
     const deployments = await deployPreset(props.presetID, {
       path_group_id: groupID,
       track: track.value,
+      config_assignments: configAssignments.value,
     })
     ElMessage.success('部署成功')
     emit('success')
@@ -363,9 +413,15 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
             <span class="text-gray-500">agent:</span>
             <span class="ml-2 text-gray-800 dark:text-gray-200">{{ selectedGroup.agent_path }}</span>
           </div>
-          <div v-if="selectedGroup.config_path">
-            <span class="text-gray-500">config:</span>
-            <span class="ml-2 text-gray-800 dark:text-gray-200">{{ selectedGroup.config_path }}</span>
+          <div v-if="effectiveConfigPaths.length > 0">
+            <span class="text-gray-500 align-top">config:</span>
+            <span class="ml-2 inline-flex flex-col gap-0.5">
+              <span
+                v-for="cp in effectiveConfigPaths"
+                :key="cp"
+                class="text-gray-800 dark:text-gray-200 break-all"
+              >{{ cp }}</span>
+            </span>
           </div>
           <div v-if="selectedGroup.prompt_path">
             <span class="text-gray-500">prompt:</span>
@@ -373,6 +429,9 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
           </div>
           <div v-if="matchHint" class="text-xs mt-1 font-medium" :class="matchHint.cls">
             {{ matchHint.text }}
+          </div>
+          <div v-if="needAssign" class="text-xs mt-1 text-blue-500 dark:text-blue-400">
+            该路径组有多条 config 路径，点击部署后将逐个分配
           </div>
         </div>
       </template>
@@ -387,10 +446,33 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
             <el-input v-model="manualPaths.agent_path" placeholder="目录路径（支持 ~）" />
           </el-form-item>
           <el-form-item v-if="presentTypes.has('config')" label="Config 路径">
-            <el-input
-              v-model="manualPaths.config_path"
-              placeholder=".json/.jsonc/.yaml/.yml/.toml"
-            />
+            <div class="w-full flex flex-col gap-2">
+              <div
+                v-for="(_, idx) in manualConfigPaths"
+                :key="idx"
+                class="flex items-center gap-2"
+              >
+                <el-input
+                  v-model="manualConfigPaths[idx]"
+                  placeholder=".json/.jsonc/.yaml/.yml/.toml"
+                />
+                <el-button
+                  v-if="manualConfigPaths.length > 1"
+                  text
+                  class="!px-2 text-gray-400 hover:!text-red-500"
+                  title="删除此路径"
+                  @click="removeManualConfig(idx)"
+                >✕</el-button>
+                <el-button
+                  v-if="idx === manualConfigPaths.length - 1"
+                  text
+                  type="primary"
+                  class="!px-2"
+                  title="添加一条 config 路径"
+                  @click="addManualConfig"
+                >＋</el-button>
+              </div>
+            </div>
           </el-form-item>
           <el-form-item v-if="presentTypes.has('prompt')" label="Prompt 路径">
             <el-input v-model="manualPaths.prompt_path" placeholder=".md 文件" />
@@ -427,7 +509,7 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
         :loading="submitting"
         :disabled="presentTypes.size === 0 || (mode === 'group' && missingTypes.length > 0)"
         @click="handleConfirm"
-      >部署</el-button>
+      >{{ needAssign ? '下一步：分配 Config' : '部署' }}</el-button>
     </template>
   </el-dialog>
 
@@ -437,5 +519,13 @@ async function doDeploy(deployReq: { path_group_id?: string; manual_paths?: any;
     :preset-name="presetName"
     :conflicts="conflictList"
     @confirm="handleConflictConfirm"
+  />
+
+  <!-- config 目标路径分配弹窗 -->
+  <ConfigAssignDialog
+    v-model:visible="assignVisible"
+    :configs="configResources.map((r) => ({ id: r.id, name: r.name }))"
+    :config-paths="effectiveConfigPaths"
+    @confirm="handleAssignConfirm"
   />
 </template>

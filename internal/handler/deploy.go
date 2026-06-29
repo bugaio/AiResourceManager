@@ -39,6 +39,8 @@ func RegisterDeployRoutes(group *gin.RouterGroup, h *DeployHandler) {
 		deployments.GET("/health", h.handleCheck)
 		deployments.POST("/check-path", h.handleCheckPath)
 		deployments.POST("/check-conflicts", h.handleCheckConflicts)
+		deployments.POST("/summarize-paths", h.handleSummarizePaths)
+		deployments.POST("/undeploy-paths", h.handleUndeployPaths)
 		deployments.POST("/open-folder", h.handleOpenFolder)
 		deployments.POST("/:id/repair", h.handleRepair)
 		deployments.DELETE("/:id/items/:item_id", h.handleCleanItem)
@@ -178,6 +180,40 @@ func (h *DeployHandler) handleCheckPath(c *gin.Context) {
 
 	_, err := os.Stat(req.Path)
 	Success(c, gin.H{"exists": err == nil})
+}
+
+// handleSummarizePaths 统计给定目标路径下的部署内容（编辑路径组删 config 路径前用）
+func (h *DeployHandler) handleSummarizePaths(c *gin.Context) {
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, model.ErrParamValidation, "参数校验失败: "+err.Error())
+		return
+	}
+	summary, err := h.svc.SummarizeDeploymentsAtPaths(req.Paths)
+	if err != nil {
+		handleBizError(c, err)
+		return
+	}
+	Success(c, summary)
+}
+
+// handleUndeployPaths 撤销给定目标路径下的所有部署（确认移除时用）
+func (h *DeployHandler) handleUndeployPaths(c *gin.Context) {
+	var req struct {
+		Paths []string `json:"paths"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, model.ErrParamValidation, "参数校验失败: "+err.Error())
+		return
+	}
+	count, err := h.svc.UndeployAtPaths(req.Paths)
+	if err != nil {
+		handleBizError(c, err)
+		return
+	}
+	Success(c, gin.H{"undeployed": count})
 }
 
 // handleOpenFolder 在系统文件管理器中打开指定路径
