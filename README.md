@@ -1,5 +1,13 @@
 # AiResourceManager
 
+<p align="center">
+  <em>不懂代码也能看懂 — 6 个互动模块，从"它能做什么"到全链路拆解</em>
+</p>
+
+<p align="center">
+  👉 <a href="https://bugaio.github.io/AiResourceManager/"><strong>点击查看 互动课程</strong></strong></a> 👈
+</p>
+
 统一管理 AI 项目资源的本地工具。单二进制部署，内嵌 Web UI，支持 Skill / MCP / SubAgent 三类资源的配置管理、分组、部署和追踪。
 
 ## 功能
