@@ -8,24 +8,29 @@
   👉 <a href="https://bugaio.github.io/AiResourceManager/"><strong>点击查看 互动课程</strong></strong></a> 👈
 </p>
 
-统一管理 AI 项目资源的本地工具。单二进制部署，内嵌 Web UI，支持 Skill / MCP / SubAgent 三类资源的配置管理、分组、部署和追踪。
+统一管理 AI 项目资源的本地工具。单二进制部署，内嵌 Web UI，支持 Skill / Agent / Config / Prompt 四类资源的配置管理、分组、部署、冲突检测和追踪。
 
 ## 功能
 
 - **Skill 管理** — 创建/编辑 Skill 配置，通过软链接部署到目标目录
-- **MCP 管理** — JSONC 编辑器，DeepMerge 部署到目标 JSON 文件，冲突检测（Union-Find 分组）
-- **SubAgent 管理** — SubAgent 配置管理，软链接部署
+- **Agent 管理** — SubAgent 配置管理（.md），软链接部署
+- **Config 管理** — JSONC 编辑器，DeepMerge 部署到目标 JSON/YAML/TOML 文件，冲突检测（Union-Find 分组 + 路径树语义）
+- **Prompt 管理** — 提示词管理，追加部署到目标 .md 文件（UUID 分隔符标记）
 - **分组** — 资源分组，支持跟踪模式（自动同步部署变更）
+- **路径组** — 配置路径组，统一管理 skill/agent/config/prompt 的部署目标
 - **路径别名** — 目标路径别名管理，按资源类型隔离
+- **Preset** — 预设资源包，一键部署整套配置到多个路径组
+- **实时同步** — WebSocket + fsnotify 监听文件变化，UI 自动刷新
+- **导入导出** — 数据迁移与备份（SQLite DB + 资源文件）
 - **单二进制** — Go embed 内嵌前端，开箱即用
 
 ## 技术栈
 
 | 层 | 技术 |
 |---|---|
-| 后端 | Go, Gin, SQLite (CGO), Cobra, Viper, Zap |
-| 前端 | Vue 3, TypeScript, Element Plus, Tailwind CSS, Monaco Editor |
-| 构建 | GoReleaser, Zig (交叉编译 C 工具链) |
+| 后端 | Go, Gin, SQLite (CGO), Cobra, Viper, Zap, fsnotify, gorilla/websocket |
+| 前端 | Vue 3, TypeScript, Pinia, Element Plus, Tailwind CSS, Monaco Editor, Axios |
+| 构建 | GoReleaser, Zig (交叉编译 C 工具链), Vite |
 
 ## 快速开始
 
@@ -127,21 +132,27 @@ make release
 ├── main.go              # 入口
 ├── embed.go             # go:embed 前端资源 + 配置
 ├── cmd/                 # CLI 命令（cobra）
+│   ├── root.go          # 根命令定义
+│   └── serve.go         # serve 子命令
 ├── internal/
-│   ├── handler/         # HTTP 路由处理
-│   ├── service/         # 业务逻辑
+│   ├── handler/         # HTTP 路由处理（8 个 + response + ws）
+│   ├── service/         # 业务逻辑（deploy/resource/group/preset/watcher/hub）
 │   ├── repo/            # 数据库操作 + 迁移
 │   ├── model/           # 数据模型
-│   ├── util/            # 工具函数（DeepMerge 等）
-│   └── config/          # 配置加载
+│   ├── util/            # 工具函数（DeepMerge/jsonc/symlink 等）
+│   ├── server/          # HTTP 服务初始化和路由注册
+│   ├── config/          # 配置加载
+│   └── banner/          # 启动横幅
 ├── web/                 # Vue 3 前端
-│   ├── src/
-│   │   ├── components/  # 组件（deploy/editor/sidebar）
-│   │   ├── stores/      # Pinia 状态
-│   │   ├── api/         # API 调用层
-│   │   └── types/       # TypeScript 类型
-│   └── dist/            # 构建产物（git ignored）
+│   └── src/
+│       ├── components/  # 组件（deploy/editor/sidebar/preset/resource）
+│       ├── stores/      # Pinia 状态
+│       ├── api/         # API 调用层
+│       ├── types/       # TypeScript 类型
+│       └── views/       # 页面视图
 ├── configs/             # 默认配置文件
+├── tasks/               # 开发任务记录
+├── scripts/             # 构建脚本
 ├── .goreleaser.yaml     # GoReleaser 配置
 └── Makefile             # 开发 & 构建命令
 ```
@@ -149,11 +160,19 @@ make release
 ## 命令参考
 
 ```bash
-aimanager serve           # 启动服务（默认 :3678）
-aimanager serve -p 8080   # 指定端口
-aimanager serve --no-open # 不自动打开浏览器
-aimanager version         # 显示版本信息
+aimanager serve              # 启动服务，默认端口 3678
+aimanager serve -p 8080      # 自定义端口
+aimanager serve -c ~.config/acme/config.toml  # 自定义配置文件
+aimanager serve --no-open    # 不自动打开浏览器
+aimanager version            # 显示版本信息
 ```
+
+| 参数 | 类型 | 默认值 | 说明 |
+|---|---|---|---|
+| `-p` / `--port` | int | `3678` | 服务监听端口 |
+| `-c` / `--config` | string | `""` | 配置文件路径 |
+| `--no-open` | bool | `false` | 不自动打开浏览器 |
+| `-h` / `--help` | — | — | 显示帮助信息 |
 
 ## License
 
