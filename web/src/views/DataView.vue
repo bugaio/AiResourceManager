@@ -1,9 +1,10 @@
 <script setup lang="ts">
 import { ref } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { ArrowLeft } from '@element-plus/icons-vue'
 import { exportData, importData } from '@/api/data'
+import { ApiError } from '@/api/request'
 import { useUiStore } from '@/stores/ui'
 
 /** 数据导入导出视图 */
@@ -11,15 +12,26 @@ const router = useRouter()
 const uiStore = useUiStore()
 
 // 导出状态
-const exportPath = ref('~/ai-resource-export')
+const exportPath = ref('')
 const exporting = ref(false)
-const exportResult = ref<{ file_count: number; total_size: number } | null>(null)
+const exportResult = ref<{
+  resource_count: number
+  group_count: number
+  preset_count: number
+  file_count: number
+  total_size: number
+} | null>(null)
 
 // 导入状态
 const importPath = ref('')
 const importStrategy = ref<'overwrite' | 'skip' | 'keep_both'>('skip')
 const importing = ref(false)
-const importResult = ref<{ added: number; overwritten: number; skipped: number } | null>(null)
+const importResult = ref<{
+  added: number
+  overwritten: number
+  skipped: number
+  renamed: number
+} | null>(null)
 
 /** 返回来源资源模块（currentType 仍保留进入前的类型） */
 function goBack() {
@@ -33,23 +45,52 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`
 }
 
-/** 执行导出 */
+/** 执行导出
+ *  目标目录非空(忽略隐藏文件)时后端返回 5004，弹窗确认后带 clear 重试 */
 async function handleExport() {
   if (!exportPath.value.trim()) {
     ElMessage.warning('请输入导出目录路径')
     return
   }
+  const path = exportPath.value.trim()
   exporting.value = true
   exportResult.value = null
   try {
-    const res = await exportData(exportPath.value.trim())
-    exportResult.value = res
-    ElMessage.success('导出完成')
+    await runExport(path, false)
   } catch (e: any) {
+    if (e instanceof ApiError && e.code === 5004) {
+      // 目标目录不为空 → 让用户确认是否清除(隐藏文件如 .git 保留)
+      try {
+        await ElMessageBox.confirm(
+          '目标目录不为空，是否清除其中的文件后再导出？（隐藏文件如 .git 会保留）',
+          '目标目录不为空',
+          { confirmButtonText: '清除并导出', cancelButtonText: '取消', type: 'warning' }
+        )
+      } catch {
+        // 用户取消，什么都不干
+        exporting.value = false
+        return
+      }
+      try {
+        await runExport(path, true)
+      } catch (e2: any) {
+        ElMessage.error(e2?.message || '导出失败')
+      } finally {
+        exporting.value = false
+      }
+      return
+    }
     ElMessage.error(e?.message || '导出失败')
   } finally {
     exporting.value = false
   }
+}
+
+/** 调用导出接口并写入结果 */
+async function runExport(path: string, clear: boolean) {
+  const res = await exportData(path, clear)
+  exportResult.value = res
+  ElMessage.success('导出完成')
 }
 
 /** 执行导入 */
@@ -93,7 +134,7 @@ async function handleImport() {
         <!-- 导出卡片 -->
         <div class="rounded-xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-gray-800 p-6 shadow-sm">
           <h2 class="text-base font-semibold text-gray-800 dark:text-gray-100 mb-1">数据导出</h2>
-          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">将所有资源、分组、配置导出到指定目录</p>
+          <p class="text-sm text-gray-500 dark:text-gray-400 mb-4">导出资源实体、分组与 preset 关联到指定目录(可对其 git init 跨机器同步，不含部署信息)</p>
           <div class="flex items-center gap-3">
             <el-input
               v-model="exportPath"
@@ -104,7 +145,7 @@ async function handleImport() {
             <el-button type="primary" :loading="exporting" @click="handleExport">导出</el-button>
           </div>
           <p v-if="exportResult" class="mt-3 text-sm text-green-600 dark:text-green-400">
-            导出完成：{{ exportResult.file_count }} 个文件，共 {{ formatSize(exportResult.total_size) }}
+            导出完成：{{ exportResult.resource_count }} 个资源、{{ exportResult.group_count }} 个分组、{{ exportResult.preset_count }} 个 preset，共 {{ exportResult.file_count }} 个文件（{{ formatSize(exportResult.total_size) }}）
           </p>
         </div>
 
@@ -128,7 +169,7 @@ async function handleImport() {
           </div>
           <el-button type="primary" :loading="importing" @click="handleImport">导入</el-button>
           <p v-if="importResult" class="mt-3 text-sm text-green-600 dark:text-green-400">
-            导入完成：新增 {{ importResult.added }}，覆盖 {{ importResult.overwritten }}，跳过 {{ importResult.skipped }}
+            导入完成：新增 {{ importResult.added }}，覆盖 {{ importResult.overwritten }}，跳过 {{ importResult.skipped }}，副本 {{ importResult.renamed }}
           </p>
         </div>
 

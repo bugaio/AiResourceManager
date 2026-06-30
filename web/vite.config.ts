@@ -26,14 +26,14 @@ export default defineConfig({
     },
   },
   server: {
-    port: 5173,
+    port: Number(process.env.VITE_PORT) || 5173,
     proxy: {
       '/api/v1/ws': {
-        target: 'ws://localhost:3678',
+        target: process.env.VITE_API_TARGET?.replace('http', 'ws') || 'ws://localhost:3678',
         ws: true,
       },
       '/api': {
-        target: 'http://localhost:3678',
+        target: process.env.VITE_API_TARGET || 'http://localhost:3678',
         changeOrigin: true,
       },
     },

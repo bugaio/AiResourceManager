@@ -47,7 +47,7 @@ func (h *DataHandler) handleExport(c *gin.Context) {
 		return
 	}
 
-	result, err := h.svc.Export(targetPath)
+	result, err := h.svc.Export(targetPath, req.Clear)
 	if err != nil {
 		handleBizError(c, err)
 		return

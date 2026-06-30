@@ -62,6 +62,7 @@ const (
 	ErrDataReadFailed  = 5001 // 数据读取失败
 	ErrDataWriteFailed = 5002 // 数据写入失败
 	ErrDataCorrupted   = 5003 // 数据损坏
+	ErrDataDirNotEmpty = 5004 // 导出目标目录非空(需用户确认清除)
 )
 
 // 系统相关错误码 (9000-9999)

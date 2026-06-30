@@ -118,13 +118,13 @@ func runServe(cmd *cobra.Command, args []string) error {
 	// 注入部署服务到资源服务（删除资源时级联撤销部署）
 	resourceSvc.SetDeployService(deploySvc)
 
-	// 创建数据导入导出服务
-	dataSvc := service.NewDataService(resourceRepo, groupRepo, aliasRepo, baseDir, cfg.DBPath)
-	dataHandler := handler.NewDataHandler(dataSvc)
-
 	// === Preset / PathGroup 模块 ===
 	presetRepo := repo.NewPresetRepo(database)
 	pathGroupRepo := repo.NewPathGroupRepo(database)
+
+	// 创建数据导入导出服务(仅同步资源/分组/preset 关联，不含部署)
+	dataSvc := service.NewDataService(resourceRepo, groupRepo, presetRepo, baseDir)
+	dataHandler := handler.NewDataHandler(dataSvc)
 
 	// 注入 presetRepo 到 deploy/resource 服务（用于 preset 部署同步、删除拦截 1005）
 	deploySvc.SetPresetRepo(presetRepo)
