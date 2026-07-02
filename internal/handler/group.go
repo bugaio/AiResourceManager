@@ -33,6 +33,7 @@ func RegisterGroupRoutes(group *gin.RouterGroup, h *GroupHandler) {
 		r.PUT("/:id", h.handleUpdate)
 		r.DELETE("/:id", h.handleDelete)
 		r.POST("/:id/resources", h.handleAddResources)
+		r.POST("/:id/resources/batch-remove", h.handleRemoveResources)
 		r.DELETE("/:id/resources/:rid", h.handleRemoveResource)
 	}
 }
@@ -134,6 +135,30 @@ func (h *GroupHandler) handleRemoveResource(c *gin.Context) {
 	resourceID := c.Param("rid")
 
 	if err := h.svc.RemoveResource(groupID, resourceID); err != nil {
+		handleBizError(c, err)
+		return
+	}
+
+	Success(c, nil)
+}
+
+// handleRemoveResources 处理批量从分组移除资源
+// 路径参数: id（分组 ID）
+// 请求体: RemoveResourcesReq
+func (h *GroupHandler) handleRemoveResources(c *gin.Context) {
+	groupID := c.Param("id")
+	var req model.RemoveResourcesReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, model.ErrParamValidation, "参数校验失败: "+err.Error())
+		return
+	}
+
+	if len(req.ResourceIDs) == 0 {
+		Error(c, model.ErrParamValidation, "resource_ids 不能为空")
+		return
+	}
+
+	if err := h.svc.RemoveResources(groupID, req.ResourceIDs); err != nil {
 		handleBizError(c, err)
 		return
 	}

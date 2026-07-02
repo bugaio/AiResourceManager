@@ -6,6 +6,7 @@ export interface Group {
   name: string
   type: ResourceType
   color: string
+  description: string
   sort_order: number
   resource_count: number
   created_at: string

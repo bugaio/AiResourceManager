@@ -146,7 +146,7 @@ func (s *GroupService) UpdateGroup(id string, req *model.UpdateGroupReq) error {
 		}
 	}
 
-	if err := s.repo.UpdateGroup(id, req.Name, req.SortOrder); err != nil {
+	if err := s.repo.UpdateGroup(id, req.Name, req.Description, req.SortOrder); err != nil {
 		return model.NewBizError(model.ErrSystemDB, err.Error())
 	}
 
@@ -238,8 +238,10 @@ func (s *GroupService) AddResources(groupID string, resourceIDs []string) error 
 		}
 	}
 
-	// 广播 deploy:synced 事件
-	s.broadcastSynced(groupID)
+	// 仅当确实触发了追踪部署同步时才广播（无部署 = 无同步，不打扰前端）
+	if len(deployments) > 0 && s.deploySvc != nil {
+		s.broadcastSynced(groupID)
+	}
 
 	return nil
 }
@@ -286,8 +288,68 @@ func (s *GroupService) RemoveResource(groupID, resourceID string) error {
 		return model.NewBizError(model.ErrSystemDB, err.Error())
 	}
 
-	// 广播 deploy:synced 事件
-	s.broadcastSynced(groupID)
+	// 仅当确实触发了追踪部署同步时才广播（无部署 = 无同步，不打扰前端）
+	if len(deployments) > 0 && s.deploySvc != nil {
+		s.broadcastSynced(groupID)
+	}
+
+	return nil
+}
+
+// RemoveResources 批量从分组中移除资源
+// 参数 groupID: 分组 ID
+// 参数 resourceIDs: 资源 ID 列表
+// 返回: 错误信息
+// 逻辑: 一次性对所有追踪部署撤销这批资源 → 批量删关联 → 仅广播一次事件
+//
+//	（对比前端逐条调用：只走一次 deploy:synced，避免刷屏"部署已自动同步"）
+func (s *GroupService) RemoveResources(groupID string, resourceIDs []string) error {
+	if len(resourceIDs) == 0 {
+		return nil
+	}
+
+	// 检查分组是否存在
+	g, err := s.repo.GetGroupByID(groupID)
+	if err != nil {
+		return model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+	if g == nil {
+		return model.NewBizError(model.ErrGroupNotFound, "分组不存在")
+	}
+
+	// 检查追踪部署，自动取消部署（仅 track=1 的才撤销实际文件）
+	deployments, err := s.repo.GetTrackDeployments(groupID)
+	if err != nil {
+		s.logger.Error("查询追踪部署失败", zap.Error(err))
+	}
+	if len(deployments) > 0 && s.deploySvc != nil {
+		s.logger.Info("分组批量移除资源触发追踪部署同步",
+			zap.String("group_id", groupID),
+			zap.Int("resources", len(resourceIDs)),
+			zap.Int("track_deployments", len(deployments)),
+		)
+		for _, dep := range deployments {
+			for _, rid := range resourceIDs {
+				if uErr := s.deploySvc.UndeployResourceFromTarget(rid, dep.ID, dep.TargetPath, ""); uErr != nil {
+					s.logger.Error("追踪取消部署失败",
+						zap.String("deployment_id", dep.ID),
+						zap.String("resource_id", rid),
+						zap.Error(uErr),
+					)
+				}
+			}
+		}
+	}
+
+	// 批量删除关联
+	if err := s.repo.RemoveResourcesFromGroup(groupID, resourceIDs); err != nil {
+		return model.NewBizError(model.ErrSystemDB, err.Error())
+	}
+
+	// 仅当确实触发了追踪部署同步时才广播（整批一次；无部署 = 无同步，不打扰前端）
+	if len(deployments) > 0 && s.deploySvc != nil {
+		s.broadcastSynced(groupID)
+	}
 
 	return nil
 }

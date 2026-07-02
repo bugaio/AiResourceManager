@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, onMounted, onBeforeUnmount } from 'vue'
 import { useResourceStore } from '@/stores/resource'
 import { useSelectionStore } from '@/stores/selection'
 import type { Resource } from '@/types/resource'
@@ -7,6 +7,37 @@ import type { Resource } from '@/types/resource'
 /** 资源列表视图（表格模式） */
 const resourceStore = useResourceStore()
 const selectionStore = useSelectionStore()
+
+/** 表格根元素，用于测量宽度限制描述 tooltip 最大宽度（= 列表宽度 - 100px） */
+const tableRef = ref<HTMLElement | null>(null)
+let ro: ResizeObserver | null = null
+
+/** tooltip 延迟 0.8s 显示，最大宽度由 CSS 变量 --desc-tip-max 控制 */
+const tooltipOptions = {
+  showAfter: 800,
+  popperClass: 'desc-overflow-tip',
+}
+
+/** 把表格宽度写入全局 CSS 变量（tooltip 被 teleport 到 body，只能靠变量传递） */
+function syncTipWidth() {
+  const w = tableRef.value?.offsetWidth ?? 0
+  if (w > 0) {
+    document.documentElement.style.setProperty('--desc-tip-max', `${Math.max(w - 100, 120)}px`)
+  }
+}
+
+onMounted(() => {
+  if (tableRef.value) {
+    ro = new ResizeObserver(syncTipWidth)
+    ro.observe(tableRef.value)
+  }
+  syncTipWidth()
+})
+
+onBeforeUnmount(() => {
+  ro?.disconnect()
+  ro = null
+})
 
 const emit = defineEmits<{
   (e: 'edit', resource: Resource): void
@@ -70,9 +101,11 @@ function handleRowDblClick(row: Resource) {
 </script>
 
 <template>
+  <div ref="tableRef">
   <el-table
     :data="resourceStore.resources"
     style="width: 100%"
+    :tooltip-options="tooltipOptions"
     @selection-change="handleSelectionChange"
     @row-dblclick="handleRowDblClick"
     class="dark:bg-gray-800"
@@ -135,4 +168,5 @@ function handleRowDblClick(row: Resource) {
       </template>
     </el-table-column>
   </el-table>
+  </div>
 </template>

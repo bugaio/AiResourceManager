@@ -11,6 +11,10 @@
       @click="resourceStore.setGroupId('0')"
     >
       全部
+      <span
+        v-if="groupStore.allCount > 0"
+        class="text-xs ml-0.5 text-gray-400 dark:text-gray-500"
+      >({{ groupStore.allCount }})</span>
     </div>
 
     <!-- 分组列表 -->

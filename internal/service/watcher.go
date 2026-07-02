@@ -25,6 +25,7 @@ type WatcherService struct {
 	baseDir    string
 	lastEvents map[string]time.Time // 去重: path → 最后处理时间
 	suppressed map[string]time.Time // 抑制: uuid → 抑制截止时间(程序自己发起的删除)
+	writeLock  int                  // 批量写入引用计数: >0 时抑制 updated 广播(程序自写文件,如导入)
 	mu         sync.Mutex
 	stopCh     chan struct{}
 	logger     *zap.Logger
@@ -68,6 +69,35 @@ func (w *WatcherService) SuppressUUID(uuid string, ttl time.Duration) {
 // SetPresetRepo 注入 preset 数据仓库（用于资源变更时推送 preset:resource_changed）
 func (w *WatcherService) SetPresetRepo(r *repo.PresetRepo) {
 	w.presetRepo = r
+}
+
+// BeginWrite 进入批量写入模式(引用计数+1)。
+// 期间程序自写文件产生的 updated 广播会被抑制,避免导入等批量操作触发前端逐个刷新闪屏。
+// 可重入:支持多个批量操作并发,计数归零才真正解锁。必须与 EndWrite 成对调用。
+func (w *WatcherService) BeginWrite() {
+	w.mu.Lock()
+	w.writeLock++
+	w.mu.Unlock()
+}
+
+// EndWrite 退出批量写入模式(引用计数-1)。
+// 延迟一小段再递减,用于 flush 掉 fsnotify 尚在途中的文件事件——
+// "写入完成"的瞬间事件可能还没到达 watcher,立即解锁仍会漏播。
+func (w *WatcherService) EndWrite() {
+	time.AfterFunc(500*time.Millisecond, func() {
+		w.mu.Lock()
+		if w.writeLock > 0 {
+			w.writeLock--
+		}
+		w.mu.Unlock()
+	})
+}
+
+// isWriteLocked 当前是否处于批量写入抑制窗口内
+func (w *WatcherService) isWriteLocked() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.writeLock > 0
 }
 
 // isSuppressed 检查 UUID 是否仍在抑制窗口内,顺便清理过期项
@@ -205,6 +235,12 @@ func (w *WatcherService) handleEvent(event fsnotify.Event) {
 
 	// 根据事件类型处理
 	if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+		// 批量写入锁定期间(如导入)跳过广播,避免逐个文件事件触发前端刷屏;
+		// 前端在批量结束后统一刷新一次。
+		if w.isWriteLocked() {
+			w.logger.Debug("批量写入中,跳过 updated 广播", zap.String("uuid", uuid))
+			return
+		}
 		// 文件被修改或创建
 		now := time.Now()
 		nowStr := now.Format(time.RFC3339)

@@ -42,6 +42,20 @@ func (s *ResourceService) SetWatcherService(w *WatcherService) {
 	s.watcherSvc = w
 }
 
+// BeginImport 进入批量导入模式:抑制 watcher 对程序自写文件的 updated 广播,避免前端逐个刷新闪屏
+func (s *ResourceService) BeginImport() {
+	if s.watcherSvc != nil {
+		s.watcherSvc.BeginWrite()
+	}
+}
+
+// EndImport 退出批量导入模式(延迟解锁以 flush 在途 fsnotify 事件)
+func (s *ResourceService) EndImport() {
+	if s.watcherSvc != nil {
+		s.watcherSvc.EndWrite()
+	}
+}
+
 // SetPresetRepo 注入 preset 数据仓库（用于资源删除拦截 1005）
 func (s *ResourceService) SetPresetRepo(r *repo.PresetRepo) {
 	s.presetRepo = r

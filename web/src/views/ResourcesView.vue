@@ -20,6 +20,17 @@ const uiStore = useUiStore()
 const resourceStore = useResourceStore()
 const deployStore = useDeployStore()
 
+// resource:updated 刷新防抖：批量导入/外部批量改动会短时间内触发多条 watcher 广播，
+// 逐条刷新会导致列表反复重绘闪烁。合并到一次刷新。
+let refreshTimer: ReturnType<typeof setTimeout> | null = null
+function scheduleRefresh() {
+  if (refreshTimer) clearTimeout(refreshTimer)
+  refreshTimer = setTimeout(() => {
+    refreshTimer = null
+    resourceStore.fetchResources(uiStore.currentType)
+  }, 250)
+}
+
 function handleWsMessage(data: unknown) {
   if (!data || typeof data !== 'object') return
   const msg = data as Record<string, unknown>
@@ -30,8 +41,8 @@ function handleWsMessage(data: unknown) {
   }
 
   if (msg.type === 'resource:updated') {
-    // 仅刷新当前显示的类型(其他类型在激活时会自行重新加载)
-    resourceStore.fetchResources(uiStore.currentType)
+    // 仅刷新当前显示的类型(其他类型在激活时会自行重新加载)；防抖合并连续事件
+    scheduleRefresh()
   }
 
   if (msg.type === 'resource:deleted') {
@@ -49,6 +60,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  if (refreshTimer) clearTimeout(refreshTimer)
   wsManager.offMessage(handleWsMessage)
 })
 </script>

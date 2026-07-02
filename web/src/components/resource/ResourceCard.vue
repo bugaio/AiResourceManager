@@ -125,8 +125,18 @@ async function handleReveal() {
     </div>
     <!-- 名称 -->
     <p class="font-semibold text-gray-800 dark:text-gray-100 truncate">{{ resource.name }}</p>
-    <!-- 描述 -->
-    <p class="text-sm text-gray-500 dark:text-gray-400 line-clamp-2">{{ resource.description || '暂无描述' }}</p>
+    <!-- 描述（悬停 0.8s 显示完整内容 tooltip） -->
+    <el-tooltip
+      v-if="resource.description"
+      effect="dark"
+      placement="top"
+      :show-after="800"
+      popper-class="desc-overflow-tip"
+      :content="resource.description"
+    >
+      <p class="text-sm text-gray-500 dark:text-gray-400 line-clamp-2">{{ resource.description }}</p>
+    </el-tooltip>
+    <p v-else class="text-sm text-gray-500 dark:text-gray-400 line-clamp-2">暂无描述</p>
     <!-- 底部：更新时间 + 类型徽标 -->
     <div class="flex items-center justify-between mt-auto pt-2">
       <span class="text-xs text-gray-400 dark:text-gray-500">{{ formattedTime }}</span>

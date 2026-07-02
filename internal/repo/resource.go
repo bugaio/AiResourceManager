@@ -111,6 +111,8 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPres
 	var args []interface{}
 
 	fromClause := `FROM resource r`
+	// 是否 JOIN 了 group_resource（多分组过滤时一个资源可能命中多条关联，需 DISTINCT 去重）
+	groupJoined := false
 
 	if resourceType != "" {
 		conditions = append(conditions, "r.type = ?")
@@ -124,9 +126,23 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPres
 		// 未分组：不存在任何 group_resource 关联的资源
 		conditions = append(conditions, "NOT EXISTS (SELECT 1 FROM group_resource gr WHERE gr.resource_id = r.id)")
 	} else if groupID != "" && groupID != "0" {
-		fromClause += ` INNER JOIN group_resource gr ON r.id = gr.resource_id`
-		conditions = append(conditions, "gr.group_id = ?")
-		args = append(args, groupID)
+		// 支持逗号分隔的多分组过滤（"全部"下的分组筛选）；单分组时行为与原来一致
+		gids := make([]string, 0)
+		for _, g := range strings.Split(groupID, ",") {
+			if g = strings.TrimSpace(g); g != "" && g != "0" {
+				gids = append(gids, g)
+			}
+		}
+		if len(gids) > 0 {
+			fromClause += ` INNER JOIN group_resource gr ON r.id = gr.resource_id`
+			placeholders := make([]string, len(gids))
+			for i, g := range gids {
+				placeholders[i] = "?"
+				args = append(args, g)
+			}
+			conditions = append(conditions, "gr.group_id IN ("+strings.Join(placeholders, ",")+")")
+			groupJoined = true
+		}
 	}
 	switch ownerPresetID {
 	case "":
@@ -143,8 +159,16 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPres
 		whereClause = " WHERE " + strings.Join(conditions, " AND ")
 	}
 
+	// 多分组 JOIN 时同一资源可能匹配多条关联，用 DISTINCT 去重（单分组/无分组无重复，不受影响）
+	countSelect := "SELECT COUNT(*) "
+	listSelectCols := "SELECT r.id, r.name, r.type, r.path, r.description, r.metadata, r.created_at, r.updated_at, r.owner_preset_id "
+	if groupJoined {
+		countSelect = "SELECT COUNT(DISTINCT r.id) "
+		listSelectCols = "SELECT DISTINCT r.id, r.name, r.type, r.path, r.description, r.metadata, r.created_at, r.updated_at, r.owner_preset_id "
+	}
+
 	// 查询总数
-	countQuery := "SELECT COUNT(*) " + fromClause + whereClause
+	countQuery := countSelect + fromClause + whereClause
 	var total int
 	if err := repo.db.Conn.QueryRow(countQuery, args...).Scan(&total); err != nil {
 		return nil, 0, fmt.Errorf("查询资源总数失败: %w", err)
@@ -152,7 +176,7 @@ func (repo *ResourceRepo) ListResources(resourceType, search, groupID, ownerPres
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	listQuery := "SELECT r.id, r.name, r.type, r.path, r.description, r.metadata, r.created_at, r.updated_at, r.owner_preset_id " +
+	listQuery := listSelectCols +
 		fromClause + whereClause + " ORDER BY r.created_at DESC LIMIT ? OFFSET ?"
 	listArgs := append(args, pageSize, offset)
 

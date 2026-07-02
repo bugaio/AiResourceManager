@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { fetchResources, importSkill } from '@/api/resource'
+import { fetchResources, importSkill, importBegin, importEnd } from '@/api/resource'
 import { parseFrontmatter } from '@/utils/frontmatter'
 
 /** Skill 导入弹窗
@@ -35,6 +35,8 @@ const props = defineProps<{
   visible: boolean
   files: File[]
   rootDirName: string
+  /** 当前所在分组 ID（'0' 或空表示"全部"，导入后不额外关联分组） */
+  groupId?: string
 }>()
 
 const emit = defineEmits<{
@@ -150,20 +152,27 @@ async function handleImport() {
   importing.value = true
   let ok = 0
   const fails: string[] = []
-  for (const item of checkedItems.value) {
-    try {
-      await importSkill({
-        name: item.name,
-        description: item.description || undefined,
-        files: item.files,
-        relPaths: item.relPaths,
-      })
-      ok++
-    } catch (e: any) {
-      fails.push(`${item.name}: ${e?.message || '失败'}`)
+  // 批量导入前后加写入锁：期间后端抑制 watcher 的逐个 updated 广播，导完统一刷新一次
+  await importBegin().catch(() => {})
+  try {
+    for (const item of checkedItems.value) {
+      try {
+        await importSkill({
+          name: item.name,
+          description: item.description || undefined,
+          files: item.files,
+          relPaths: item.relPaths,
+          groupId: props.groupId && props.groupId !== '0' ? props.groupId : undefined,
+        })
+        ok++
+      } catch (e: any) {
+        fails.push(`${item.name}: ${e?.message || '失败'}`)
+      }
     }
+  } finally {
+    await importEnd().catch(() => {})
+    importing.value = false
   }
-  importing.value = false
   if (ok > 0) {
     ElMessage.success(
       `成功导入 ${ok} 个${fails.length ? `,失败 ${fails.length} 个` : ''}`

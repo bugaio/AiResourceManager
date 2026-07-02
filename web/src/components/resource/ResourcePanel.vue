@@ -9,6 +9,7 @@ import { ref, computed, watch, onActivated } from 'vue'
 import { ElMessageBox, ElMessage } from 'element-plus'
 import ResourceGrid from '@/components/resource/ResourceGrid.vue'
 import ResourceList from '@/components/resource/ResourceList.vue'
+import GroupDescription from '@/components/resource/GroupDescription.vue'
 import EmptyState from '@/components/resource/EmptyState.vue'
 import BatchBar from '@/components/common/BatchBar.vue'
 import ResourceForm from '@/components/resource/ResourceForm.vue'
@@ -76,6 +77,42 @@ const importFiles = ref<File[]>([])
 const importRootName = ref('')
 
 const canImport = computed(() => props.type === 'skill' || props.type === 'agent')
+
+// 筛选分组下拉（仅「全部」下可用）
+const filterPopoverVisible = ref(false)
+const filterGroupIds = computed(() => state.value.filterGroupIds)
+
+/** 是否已勾选全部分组 */
+const isAllGroupsChecked = computed(() =>
+  groupStore.groups.length > 0 && filterGroupIds.value.length === groupStore.groups.length
+)
+/** 半选态 */
+const isGroupsIndeterminate = computed(() => {
+  const n = filterGroupIds.value.length
+  return n > 0 && n < groupStore.groups.length
+})
+
+/** 单个分组勾选切换 */
+function handleToggleGroup(id: string, checked: boolean) {
+  const set = new Set(filterGroupIds.value)
+  if (checked) set.add(id)
+  else set.delete(id)
+  resourceStore.setFilterGroupIds([...set], props.type)
+}
+
+/** 全选 / 取消全选 */
+function handleToggleAllGroups(val: any) {
+  if (val) {
+    resourceStore.setFilterGroupIds(groupStore.groups.map((g) => g.id), props.type)
+  } else {
+    resourceStore.setFilterGroupIds([], props.type)
+  }
+}
+
+/** 清除筛选 */
+function handleClearFilter() {
+  resourceStore.setFilterGroupIds([], props.type)
+}
 
 /** 触发系统目录选择 */
 function handleImportClick() {
@@ -306,6 +343,55 @@ onActivated(() => resourceStore.fetchResources(props.type))
           @change="handleUngroupedChange"
           >未分组</el-checkbox
         >
+        <!-- 筛选分组（仅「全部」下）：多选下拉，含全选 -->
+        <el-popover
+          v-if="state.currentGroupId === '0'"
+          v-model:visible="filterPopoverVisible"
+          placement="bottom-start"
+          :width="220"
+          trigger="click"
+        >
+          <template #reference>
+            <el-button size="small" :type="filterGroupIds.length > 0 ? 'primary' : 'default'">
+              筛选分组{{ filterGroupIds.length > 0 ? ` (${filterGroupIds.length})` : '' }}
+            </el-button>
+          </template>
+          <div class="flex flex-col gap-1">
+            <div class="flex items-center justify-between pb-1.5 mb-1 border-b border-gray-200 dark:border-gray-700">
+              <el-checkbox
+                :model-value="isAllGroupsChecked"
+                :indeterminate="isGroupsIndeterminate"
+                :disabled="groupStore.groups.length === 0"
+                @change="handleToggleAllGroups"
+              >全选</el-checkbox>
+              <button
+                v-if="filterGroupIds.length > 0"
+                class="text-xs text-gray-400 hover:text-gray-600 dark:hover:text-gray-200"
+                @click="handleClearFilter"
+              >清除</button>
+            </div>
+            <div class="max-h-60 overflow-y-auto flex flex-col gap-0.5">
+              <el-checkbox
+                v-for="g in groupStore.groups"
+                :key="g.id"
+                :model-value="filterGroupIds.includes(g.id)"
+                @change="(val: any) => handleToggleGroup(g.id, !!val)"
+              >
+                <span class="inline-flex items-center gap-1.5">
+                  <span
+                    v-if="g.color"
+                    class="w-2 h-2 rounded-full flex-shrink-0"
+                    :style="{ backgroundColor: g.color }"
+                  ></span>
+                  <span class="truncate">{{ g.name }}</span>
+                </span>
+              </el-checkbox>
+              <p v-if="groupStore.groups.length === 0" class="text-xs text-gray-400 py-2 text-center">
+                暂无分组
+              </p>
+            </div>
+          </div>
+        </el-popover>
         <el-input
           v-model="searchInput"
           placeholder="搜索资源..."
@@ -354,6 +440,9 @@ onActivated(() => resourceStore.fetchResources(props.type))
         </el-button>
       </div>
     </div>
+
+    <!-- 分组说明（仅进入具体分组时显示，可编辑，多行） -->
+    <GroupDescription v-if="state.currentGroupId !== '0'" :group-id="state.currentGroupId" />
 
     <!-- 内容区：加载 / 空状态 / 列表 -->
     <div v-if="state.loading" class="flex-1 flex items-center justify-center">
@@ -423,6 +512,7 @@ onActivated(() => resourceStore.fetchResources(props.type))
       v-model:visible="importSkillVisible"
       :files="importFiles"
       :root-dir-name="importRootName"
+      :group-id="state.currentGroupId"
       @success="handleImportSuccess"
     />
 
@@ -432,6 +522,7 @@ onActivated(() => resourceStore.fetchResources(props.type))
       v-model:visible="importAgentVisible"
       :files="importFiles"
       :root-dir-name="importRootName"
+      :group-id="state.currentGroupId"
       @success="handleImportSuccess"
     />
 

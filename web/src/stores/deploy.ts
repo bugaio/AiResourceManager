@@ -61,6 +61,13 @@ export const useDeployStore = defineStore('deploy', () => {
     await fetchTargets()
   }
 
+  /** 批量清理部署项（undeploy=true 时同时撤销文件），返回实际移除数量 */
+  async function cleanItems(itemIds: string[], undeploy = false) {
+    const { removed } = await deployApi.cleanItems(itemIds, undeploy)
+    await fetchTargets()
+    return removed
+  }
+
   return {
     targets,
     loading,
@@ -71,5 +78,6 @@ export const useDeployStore = defineStore('deploy', () => {
     checkHealth,
     repair,
     cleanItem,
+    cleanItems,
   }
 })

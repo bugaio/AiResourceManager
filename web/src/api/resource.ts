@@ -114,3 +114,13 @@ export function importAgent(params: {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
+
+/** 进入批量导入模式：后端抑制 watcher 逐个文件的 updated 广播，避免前端刷屏 */
+export function importBegin(): Promise<void> {
+  return request.post('/resources/import/begin')
+}
+
+/** 退出批量导入模式（后端延迟解锁以 flush 在途文件事件） */
+export function importEnd(): Promise<void> {
+  return request.post('/resources/import/end')
+}

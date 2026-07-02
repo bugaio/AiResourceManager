@@ -85,11 +85,12 @@ type bundleResource struct {
 
 // bundleGroup 导出的分组记录(去掉运行时统计字段)
 type bundleGroup struct {
-	ID        string `json:"id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Color     string `json:"color"`
-	SortOrder int    `json:"sort_order"`
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Type        string `json:"type"`
+	Color       string `json:"color"`
+	Description string `json:"description"`
+	SortOrder   int    `json:"sort_order"`
 }
 
 // bundlePreset 导出的 preset 记录(去掉运行时统计字段)
@@ -180,11 +181,12 @@ func (s *DataService) Export(targetPath string, clear bool) (*model.ExportResult
 	}
 	for _, g := range groups {
 		b.Groups = append(b.Groups, bundleGroup{
-			ID:        g.ID,
-			Name:      g.Name,
-			Type:      g.Type,
-			Color:     g.Color,
-			SortOrder: g.SortOrder,
+			ID:          g.ID,
+			Name:        g.Name,
+			Type:        g.Type,
+			Color:       g.Color,
+			Description: g.Description,
+			SortOrder:   g.SortOrder,
 		})
 		rids, gerr := s.groupRepo.GetGroupResources(g.ID)
 		if gerr != nil {
@@ -429,7 +431,7 @@ func (s *DataService) importGroup(g bundleGroup, strategy string) (string, error
 		case "skip":
 			return "", nil
 		case "overwrite":
-			_ = s.groupRepo.UpdateGroup(g.ID, &g.Name, &g.SortOrder)
+			_ = s.groupRepo.UpdateGroup(g.ID, &g.Name, &g.Description, &g.SortOrder)
 			return g.ID, nil
 		case "keep_both":
 			g.ID = util.NewUUID()
@@ -437,7 +439,7 @@ func (s *DataService) importGroup(g bundleGroup, strategy string) (string, error
 	}
 	name := s.uniqueGroupName(g.Name, g.Type)
 	ng := &model.Group{
-		ID: g.ID, Name: name, Type: g.Type, Color: g.Color,
+		ID: g.ID, Name: name, Type: g.Type, Color: g.Color, Description: g.Description,
 		SortOrder: g.SortOrder, CreatedAt: time.Now(), UpdatedAt: time.Now(),
 	}
 	if err := s.groupRepo.InsertGroup(ng); err != nil {

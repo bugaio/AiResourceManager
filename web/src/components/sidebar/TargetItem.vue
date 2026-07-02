@@ -20,6 +20,11 @@ const checking = ref(false)
 // 编辑菜单弹窗
 const editMenuVisible = ref(false)
 
+// 移除分组资源弹窗
+const removeGroupsVisible = ref(false)
+const selectedGroupNames = ref<string[]>([])
+const removingGroups = ref(false)
+
 // 收藏弹窗
 const favoriteDialogVisible = ref(false)
 const favoriteAliasName = ref('')
@@ -47,6 +52,34 @@ const allItems = computed(() => {
     return 0
   })
 })
+
+/** 当前类型下已按组部署的分组（name+color+color 去重）；空则不显示"移除分组资源"入口 */
+const deployedGroups = computed(() => {
+  const map = new Map<string, { name: string; color: string; count: number }>()
+  for (const item of allItems.value) {
+    if (!item.group_name) continue
+    const g = map.get(item.group_name)
+    if (g) {
+      g.count++
+    } else {
+      map.set(item.group_name, {
+        name: item.group_name,
+        color: item.group_color || '#9CA3AF',
+        count: 1,
+      })
+    }
+  }
+  return [...map.values()].sort((a, b) => a.name.localeCompare(b.name))
+})
+
+/** 是否存在按组部署的资源 */
+const hasGroupItems = computed(() => deployedGroups.value.length > 0)
+
+/** 弹窗内是否已全选 */
+const allGroupsSelected = computed(() =>
+  deployedGroups.value.length > 0 &&
+  selectedGroupNames.value.length === deployedGroups.value.length,
+)
 
 /** 当前类型对应的 deploy_type */
 const currentDeployType = computed(() => {
@@ -177,6 +210,48 @@ async function handleClear() {
     ElMessage.success(`已清空 ${typeName} 部署`)
   } catch {
     // cancelled
+  }
+}
+
+/** 打开"移除分组资源"弹窗 */
+function handleRemoveGroups() {
+  editMenuVisible.value = false
+  selectedGroupNames.value = []
+  removeGroupsVisible.value = true
+}
+
+/** 全选 / 取消全选 */
+function toggleSelectAll() {
+  if (allGroupsSelected.value) {
+    selectedGroupNames.value = []
+  } else {
+    selectedGroupNames.value = deployedGroups.value.map(g => g.name)
+  }
+}
+
+/** 确认移除选中分组下、按组部署的子资源 */
+async function handleRemoveGroupsConfirm() {
+  if (selectedGroupNames.value.length === 0) {
+    ElMessage.warning('请选择要移除的分组')
+    return
+  }
+  const selected = new Set(selectedGroupNames.value)
+  // 只移除"按组部署"的项（group_name 命中所选分组）
+  const items = allItems.value.filter(i => i.group_name && selected.has(i.group_name))
+  if (items.length === 0) {
+    ElMessage.info('所选分组下没有可移除的资源')
+    return
+  }
+  removingGroups.value = true
+  try {
+    // 一次批量调用：broken 项后端会自动跳过文件删除、仅删记录，统一传 undeploy=true 即可
+    const removed = await deployStore.cleanItems(items.map(i => i.id), true)
+    ElMessage.success(`已移除 ${removed} 个资源`)
+    removeGroupsVisible.value = false
+  } catch (e: any) {
+    ElMessage.error(e?.message || '移除失败')
+  } finally {
+    removingGroups.value = false
   }
 }
 
@@ -368,6 +443,13 @@ async function handleClean(deploymentId: string, itemId: string, status: string)
     >
       <div class="flex flex-col gap-2">
         <button
+          v-if="hasGroupItems"
+          class="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
+          @click="handleRemoveGroups"
+        >
+          📦 移除分组资源
+        </button>
+        <button
           class="w-full text-left px-3 py-2 text-sm text-gray-700 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-gray-700 rounded"
           @click="handleClear"
         >
@@ -415,6 +497,49 @@ async function handleClean(deploymentId: string, itemId: string, status: string)
       <template #footer>
         <el-button @click="favoriteDialogVisible = false">取消</el-button>
         <el-button type="primary" :loading="favoriteSaving" @click="handleFavoriteConfirm">确认</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- 移除分组资源弹窗 -->
+    <el-dialog
+      v-model="removeGroupsVisible"
+      title="移除分组资源"
+      width="400px"
+      :close-on-click-modal="false"
+    >
+      <div class="text-xs text-gray-500 dark:text-gray-400 mb-3">
+        选择要从「{{ displayName }}」移除的分组，将撤销这些分组下按组部署的子资源。
+      </div>
+      <div class="flex flex-col gap-1.5 max-h-72 overflow-y-auto">
+        <label
+          v-for="g in deployedGroups"
+          :key="g.name"
+          class="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-gray-700 cursor-pointer"
+        >
+          <el-checkbox v-model="selectedGroupNames" :value="g.name" />
+          <span
+            class="w-2.5 h-2.5 rounded-full flex-shrink-0"
+            :style="{ backgroundColor: g.color }"
+          ></span>
+          <span class="text-sm text-gray-700 dark:text-gray-300 truncate flex-1">{{ g.name }}</span>
+          <span class="text-[10px] text-gray-400">{{ g.count }} 项</span>
+        </label>
+      </div>
+      <template #footer>
+        <div class="flex items-center justify-between w-full">
+          <el-button text @click="toggleSelectAll">
+            {{ allGroupsSelected ? '取消全选' : '全选' }}
+          </el-button>
+          <div class="flex items-center gap-2">
+            <el-button @click="removeGroupsVisible = false">取消</el-button>
+            <el-button
+              type="danger"
+              :loading="removingGroups"
+              :disabled="selectedGroupNames.length === 0"
+              @click="handleRemoveGroupsConfirm"
+            >确认移除</el-button>
+          </div>
+        </div>
       </template>
     </el-dialog>
   </div>

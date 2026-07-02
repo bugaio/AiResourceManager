@@ -76,12 +76,14 @@ async function handleBatchDelete() {
       }
     } catch (_e) {}
   } else {
-    for (const id of ids) {
-      await groupStore.removeResource(resourceStore.currentGroupId, id)
+    try {
+      await groupStore.removeResources(resourceStore.currentGroupId, ids)
+      ElMessage.success('已从分组移除')
+      selectionStore.clearForType(props.type)
+      resourceStore.fetchResources()
+    } catch (e: any) {
+      ElMessage.error(e?.message || '移除失败')
     }
-    ElMessage.success('已从分组移除')
-    selectionStore.clearForType(props.type)
-    resourceStore.fetchResources()
   }
 }
 

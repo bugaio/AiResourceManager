@@ -21,7 +21,7 @@ export function createGroup(data: { name: string; type: ResourceType }): Promise
 }
 
 /** 更新分组 */
-export function updateGroup(id: string, data: { name?: string; sort_order?: number }): Promise<void> {
+export function updateGroup(id: string, data: { name?: string; description?: string; sort_order?: number }): Promise<void> {
   return request.put(`/groups/${id}`, data)
 }
 
@@ -38,4 +38,9 @@ export function addResources(groupId: string, resourceIds: string[]): Promise<vo
 /** 从分组移除资源 */
 export function removeResource(groupId: string, resourceId: string): Promise<void> {
   return request.delete(`/groups/${groupId}/resources/${resourceId}`)
+}
+
+/** 批量从分组移除资源（整批仅触发一次同步广播） */
+export function removeResources(groupId: string, resourceIds: string[]): Promise<void> {
+  return request.post(`/groups/${groupId}/resources/batch-remove`, { resource_ids: resourceIds })
 }

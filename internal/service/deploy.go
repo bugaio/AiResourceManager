@@ -564,6 +564,70 @@ func (s *DeployService) CleanItem(itemID string, undeploy bool) error {
 	return nil
 }
 
+// CleanItems 批量清理部署子项
+// 参数 itemIDs: 明细 ID 列表
+// 参数 undeploy: true 时同时撤销实际文件（symlink / json key）
+// 返回: 实际成功移除的子项数量与错误
+// 说明: 逐项撤销文件后统一删记录，最后按受影响的 deployment 清理空部署记录，
+//
+//	相比前端逐条调用接口，仅一次事务边界、一次空记录清理，减少往返与冗余查询。
+func (s *DeployService) CleanItems(itemIDs []string, undeploy bool) (int, error) {
+	if len(itemIDs) == 0 {
+		return 0, nil
+	}
+
+	// 受影响的 deployment 集合，最后统一检查是否需删除空部署记录
+	affected := make(map[string]struct{})
+	removed := 0
+
+	for _, itemID := range itemIDs {
+		item, err := s.deployRepo.GetDeploymentItemByID(itemID)
+		if err != nil {
+			return removed, model.NewBizError(model.ErrSystemDB, err.Error())
+		}
+		if item == nil {
+			// 明细已不存在（可能被并发移除），跳过而非中断整批
+			continue
+		}
+
+		// undeploy=true 时先撤销实际文件
+		if undeploy {
+			dep, _ := s.deployRepo.GetDeploymentByID(item.DeploymentID)
+			if dep != nil {
+				if dep.DeployType == "merge" {
+					s.removeMergeResource(dep.TargetPath, item.ResourceID)
+				} else {
+					if _, e := os.Lstat(item.LinkPath); e == nil {
+						os.Remove(item.LinkPath)
+					}
+				}
+				s.removeFromMetaJSON(dep.TargetPath, dep.ID)
+			}
+		}
+
+		if err := s.deployRepo.DeleteDeploymentItem(itemID); err != nil {
+			return removed, model.NewBizError(model.ErrSystemDB, err.Error())
+		}
+		affected[item.DeploymentID] = struct{}{}
+		removed++
+	}
+
+	// 统一清理已无明细的部署记录
+	for depID := range affected {
+		count, err := s.deployRepo.GetDeploymentItemCount(depID)
+		if err != nil {
+			return removed, model.NewBizError(model.ErrSystemDB, err.Error())
+		}
+		if count == 0 {
+			if err := s.deployRepo.DeleteDeployment(depID); err != nil {
+				return removed, model.NewBizError(model.ErrSystemDB, err.Error())
+			}
+		}
+	}
+
+	return removed, nil
+}
+
 // DeploySingleResourceToTarget 部署单个资源到指定目标（追踪联动用）
 // 参数 deploymentID: 追踪部署 ID
 // 参数 resource: 资源实体

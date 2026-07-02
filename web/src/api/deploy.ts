@@ -39,6 +39,11 @@ export function cleanItem(deploymentId: string, itemId: string, undeploy = false
   })
 }
 
+/** 批量清理部署项（undeploy=true 时同时撤销实际文件），返回实际移除数量 */
+export function cleanItems(itemIds: string[], undeploy = false): Promise<{ removed: number }> {
+  return request.post('/deployments/clean-items', { item_ids: itemIds, undeploy })
+}
+
 /** 检查路径是否存在 */
 export function checkPathExists(path: string): Promise<{ exists: boolean }> {
   return request.post('/deployments/check-path', { path })

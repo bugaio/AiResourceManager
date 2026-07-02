@@ -31,9 +31,9 @@ func (repo *GroupRepo) InsertGroup(g *model.Group) error {
 	defer repo.db.Unlock()
 
 	_, err := repo.db.Conn.Exec(
-		`INSERT INTO "group" (id, name, type, color, sort_order, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
-		g.ID, g.Name, g.Type, g.Color, g.SortOrder, g.CreatedAt, g.UpdatedAt,
+		`INSERT INTO "group" (id, name, type, color, description, sort_order, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Name, g.Type, g.Color, g.Description, g.SortOrder, g.CreatedAt, g.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("插入分组失败: %w", err)
@@ -50,9 +50,9 @@ func (repo *GroupRepo) GetGroupByID(id string) (*model.Group, error) {
 
 	g := &model.Group{}
 	err := repo.db.Conn.QueryRow(
-		`SELECT id, name, type, color, sort_order, created_at, updated_at
+		`SELECT id, name, type, color, description, sort_order, created_at, updated_at
 		 FROM "group" WHERE id = ?`, id,
-	).Scan(&g.ID, &g.Name, &g.Type, &g.Color, &g.SortOrder, &g.CreatedAt, &g.UpdatedAt)
+	).Scan(&g.ID, &g.Name, &g.Type, &g.Color, &g.Description, &g.SortOrder, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -93,7 +93,7 @@ func (repo *GroupRepo) ListGroups(groupType string, page, pageSize int) ([]model
 
 	// 分页查询
 	offset := (page - 1) * pageSize
-	listQuery := `SELECT id, name, type, color, sort_order, created_at, updated_at FROM "group"` +
+	listQuery := `SELECT id, name, type, color, description, sort_order, created_at, updated_at FROM "group"` +
 		whereClause + " ORDER BY sort_order ASC, created_at DESC LIMIT ? OFFSET ?"
 	listArgs := append(args, pageSize, offset)
 
@@ -106,7 +106,7 @@ func (repo *GroupRepo) ListGroups(groupType string, page, pageSize int) ([]model
 	var list []model.Group
 	for rows.Next() {
 		var g model.Group
-		if err := rows.Scan(&g.ID, &g.Name, &g.Type, &g.Color, &g.SortOrder, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		if err := rows.Scan(&g.ID, &g.Name, &g.Type, &g.Color, &g.Description, &g.SortOrder, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, 0, fmt.Errorf("扫描分组行失败: %w", err)
 		}
 		list = append(list, g)
@@ -117,12 +117,13 @@ func (repo *GroupRepo) ListGroups(groupType string, page, pageSize int) ([]model
 	return list, total, nil
 }
 
-// UpdateGroup 更新分组名称和排序
+// UpdateGroup 更新分组名称、说明和排序
 // 参数 id: 分组 ID
 // 参数 name: 新名称（nil 表示不更新）
+// 参数 description: 新说明（nil 表示不更新）
 // 参数 sortOrder: 新排序权重（nil 表示不更新）
 // 返回: 错误信息
-func (repo *GroupRepo) UpdateGroup(id string, name *string, sortOrder *int) error {
+func (repo *GroupRepo) UpdateGroup(id string, name, description *string, sortOrder *int) error {
 	repo.db.Lock()
 	defer repo.db.Unlock()
 
@@ -132,6 +133,10 @@ func (repo *GroupRepo) UpdateGroup(id string, name *string, sortOrder *int) erro
 	if name != nil {
 		setClauses = append(setClauses, "name = ?")
 		args = append(args, *name)
+	}
+	if description != nil {
+		setClauses = append(setClauses, "description = ?")
+		args = append(args, *description)
 	}
 	if sortOrder != nil {
 		setClauses = append(setClauses, "sort_order = ?")
@@ -248,6 +253,32 @@ func (repo *GroupRepo) RemoveResourceFromGroup(groupID, resourceID string) error
 		return fmt.Errorf("从分组移除资源失败: %w", err)
 	}
 	return nil
+}
+
+// RemoveResourcesFromGroup 批量从分组中移除资源
+// 参数 groupID: 分组 ID
+// 参数 resourceIDs: 资源 ID 列表
+// 返回: 错误信息
+func (repo *GroupRepo) RemoveResourcesFromGroup(groupID string, resourceIDs []string) error {
+	repo.db.Lock()
+	defer repo.db.Unlock()
+
+	tx, err := repo.db.Conn.Begin()
+	if err != nil {
+		return fmt.Errorf("开始事务失败: %w", err)
+	}
+
+	for _, rid := range resourceIDs {
+		if _, err := tx.Exec(
+			`DELETE FROM group_resource WHERE group_id = ? AND resource_id = ?`,
+			groupID, rid,
+		); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("从分组移除资源失败: %w", err)
+		}
+	}
+
+	return tx.Commit()
 }
 
 // IsResourceInGroup 检查资源是否仍在指定分组中

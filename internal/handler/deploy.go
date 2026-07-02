@@ -44,6 +44,7 @@ func RegisterDeployRoutes(group *gin.RouterGroup, h *DeployHandler) {
 		deployments.POST("/open-folder", h.handleOpenFolder)
 		deployments.POST("/:id/repair", h.handleRepair)
 		deployments.DELETE("/:id/items/:item_id", h.handleCleanItem)
+		deployments.POST("/clean-items", h.handleCleanItems)
 		deployments.GET("/by-resource/:resourceId", h.handleResourceDeployTargets)
 	}
 }
@@ -164,6 +165,27 @@ func (h *DeployHandler) handleCleanItem(c *gin.Context) {
 	}
 
 	Success(c, nil)
+}
+
+// handleCleanItems 批量清理/撤销部署子项
+// 请求体: {"item_ids": ["..."], "undeploy": true}
+func (h *DeployHandler) handleCleanItems(c *gin.Context) {
+	var req struct {
+		ItemIDs  []string `json:"item_ids"`
+		Undeploy bool     `json:"undeploy"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		Error(c, model.ErrParamValidation, "参数校验失败: "+err.Error())
+		return
+	}
+
+	removed, err := h.svc.CleanItems(req.ItemIDs, req.Undeploy)
+	if err != nil {
+		handleBizError(c, err)
+		return
+	}
+
+	Success(c, gin.H{"removed": removed})
 }
 
 // handleCheckPath 检查给定路径是否存在于文件系统

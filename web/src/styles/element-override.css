@@ -36,3 +36,11 @@
   background-color: #1f2937;
   border-color: #374151;
 }
+
+/* 描述列 overflow tooltip：最大宽度 = 列表宽度 - 100px，超长换行 */
+.el-popper.desc-overflow-tip {
+  max-width: var(--desc-tip-max, 480px);
+  white-space: normal;
+  word-break: break-word;
+  line-height: 1.5;
+}

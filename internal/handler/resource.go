@@ -34,6 +34,9 @@ func RegisterResourceRoutes(group *gin.RouterGroup, h *ResourceHandler) {
 		// import-skill / import-agent 必须在 :id 之前注册
 		r.POST("/import-skill", h.handleImportSkill)
 		r.POST("/import-agent", h.handleImportAgent)
+		// 批量导入前后包一层写入锁,抑制 watcher 逐个文件的 updated 广播
+		r.POST("/import/begin", h.handleImportBegin)
+		r.POST("/import/end", h.handleImportEnd)
 		// batch 路由必须在 :id 之前注册，避免路由冲突
 		r.DELETE("/batch", h.handleBatchDelete)
 		r.GET("/:id", h.handleGet)
@@ -248,6 +251,18 @@ func (h *ResourceHandler) handleImportSkill(c *gin.Context) {
 		return
 	}
 	Success(c, resource)
+}
+
+// handleImportBegin 进入批量导入模式(抑制 watcher 逐个文件的 updated 广播)
+func (h *ResourceHandler) handleImportBegin(c *gin.Context) {
+	h.svc.BeginImport()
+	Success(c, nil)
+}
+
+// handleImportEnd 退出批量导入模式(延迟解锁以 flush 在途文件事件)
+func (h *ResourceHandler) handleImportEnd(c *gin.Context) {
+	h.svc.EndImport()
+	Success(c, nil)
 }
 
 // handleImportAgent 处理 agent 单文件导入

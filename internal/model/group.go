@@ -9,6 +9,7 @@ type Group struct {
 	Name          string    `json:"name"`           // 分组名称
 	Type          string    `json:"type"`           // 分组类型: skill/agent/config/prompt
 	Color         string    `json:"color"`          // 分组颜色（hex）
+	Description   string    `json:"description"`    // 分组说明（多行文本，可空）
 	SortOrder     int       `json:"sort_order"`     // 排序权重
 	ResourceCount int       `json:"resource_count"` // 分组内资源数量（运行时填充）
 	CreatedAt     time.Time `json:"created_at"`     // 创建时间
@@ -23,12 +24,18 @@ type CreateGroupReq struct {
 
 // UpdateGroupReq 更新分组请求
 type UpdateGroupReq struct {
-	Name      *string `json:"name"`       // 分组名称（可选）
-	SortOrder *int    `json:"sort_order"` // 排序权重（可选）
+	Name        *string `json:"name"`        // 分组名称（可选）
+	Description *string `json:"description"` // 分组说明（可选）
+	SortOrder   *int    `json:"sort_order"`  // 排序权重（可选）
 }
 
 // AddResourcesReq 添加资源到分组请求
 type AddResourcesReq struct {
+	ResourceIDs []string `json:"resource_ids" binding:"required"` // 资源 ID 列表
+}
+
+// RemoveResourcesReq 批量从分组移除资源请求
+type RemoveResourcesReq struct {
 	ResourceIDs []string `json:"resource_ids" binding:"required"` // 资源 ID 列表
 }
 

@@ -16,6 +16,8 @@ interface TypeState {
   currentGroupId: string
   /** 仅在「全部」分组下生效：true 时只显示未被任何分组包含的资源 */
   ungroupedOnly: boolean
+  /** 仅在「全部」分组下生效：按选中的分组 ID 过滤（空=不过滤，显示全部） */
+  filterGroupIds: string[]
 }
 
 const ALL_TYPES: ResourceType[] = ['skill', 'agent', 'config', 'prompt']
@@ -32,6 +34,7 @@ function emptyState(): TypeState {
     search: '',
     currentGroupId: '0',
     ungroupedOnly: false,
+    filterGroupIds: [],
   }
 }
 
@@ -77,10 +80,17 @@ export const useResourceStore = defineStore('resource', () => {
     const s = states.value[t]
     s.loading = true
     try {
-      // 「全部」分组下且勾选未分组 → 传哨兵值;否则按 currentGroupId 过滤
+      // 「全部」分组下：勾选未分组 → 哨兵值；选了筛选分组 → 逗号分隔多分组；否则不过滤。
+      // 非「全部」分组：按 currentGroupId 过滤
       let groupParam: string | undefined
       if (s.currentGroupId === '0') {
-        groupParam = s.ungroupedOnly ? GROUP_UNGROUPED : undefined
+        if (s.ungroupedOnly) {
+          groupParam = GROUP_UNGROUPED
+        } else if (s.filterGroupIds.length > 0) {
+          groupParam = s.filterGroupIds.join(',')
+        } else {
+          groupParam = undefined
+        }
       } else {
         groupParam = s.currentGroupId
       }
@@ -124,8 +134,11 @@ export const useResourceStore = defineStore('resource', () => {
     const t = type ?? ui.currentType
     const s = states.value[t]
     s.currentGroupId = id
-    // 离开「全部」分组时，未分组筛选失去意义，复位
-    if (id !== '0') s.ungroupedOnly = false
+    // 离开「全部」分组时，未分组筛选与分组筛选失去意义，复位
+    if (id !== '0') {
+      s.ungroupedOnly = false
+      s.filterGroupIds = []
+    }
     s.page = 1
     fetchResources(t)
     // 切换分组时清空该 type 的选中(同 type 内,符合预期)
@@ -137,6 +150,20 @@ export const useResourceStore = defineStore('resource', () => {
     const t = type ?? ui.currentType
     const s = states.value[t]
     s.ungroupedOnly = val
+    // 与分组筛选互斥
+    if (val) s.filterGroupIds = []
+    s.page = 1
+    fetchResources(t)
+    useSelectionStore().clearForType(t)
+  }
+
+  /** 设置「全部」下的分组筛选(多选;传空数组=不过滤) */
+  function setFilterGroupIds(ids: string[], type?: ResourceType) {
+    const t = type ?? ui.currentType
+    const s = states.value[t]
+    s.filterGroupIds = ids
+    // 与未分组筛选互斥
+    if (ids.length > 0) s.ungroupedOnly = false
     s.page = 1
     fetchResources(t)
     useSelectionStore().clearForType(t)
@@ -173,6 +200,7 @@ export const useResourceStore = defineStore('resource', () => {
     setSearch,
     setGroupId,
     setUngroupedOnly,
+    setFilterGroupIds,
     removeResourceLocally,
   }
 })

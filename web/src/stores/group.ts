@@ -1,6 +1,7 @@
 import { defineStore } from "pinia";
 import { ref, watch } from "vue";
 import * as groupApi from "@/api/group";
+import { fetchResources } from "@/api/resource";
 import { useUiStore } from "./ui";
 import { useDeployStore } from "./deploy";
 import type { Group } from "@/types/group";
@@ -11,6 +12,8 @@ export const useGroupStore = defineStore("group", () => {
 
   // 分组列表
   const groups = ref<Group[]>([]);
+  // "全部"分组的资源数量（该类型全部非私有资源，与"全部"列表口径一致）
+  const allCount = ref(0);
   // 加载状态
   const loading = ref(false);
 
@@ -18,10 +21,16 @@ export const useGroupStore = defineStore("group", () => {
   async function fetchGroups() {
     loading.value = true;
     try {
-      const resp = await groupApi.fetchGroups({ type: ui.currentType });
+      // 并行拉：分组列表 + "全部"资源总数（page_size=1 仅取 total）
+      const [resp, all] = await Promise.all([
+        groupApi.fetchGroups({ type: ui.currentType }),
+        fetchResources({ type: ui.currentType, page: 1, page_size: 1 }),
+      ]);
       groups.value = resp.list ?? [];
+      allCount.value = all.total ?? 0;
     } catch (_e) {
       groups.value = [];
+      allCount.value = 0;
     } finally {
       loading.value = false;
     }
@@ -35,11 +44,12 @@ export const useGroupStore = defineStore("group", () => {
   }
 
   /** 更新分组 */
-  async function updateGroup(id: string, data: { name?: string; sort_order?: number }) {
+  async function updateGroup(id: string, data: { name?: string; description?: string; sort_order?: number }) {
     await groupApi.updateGroup(id, data);
     const idx = groups.value.findIndex((g) => g.id === id);
     if (idx !== -1) {
       if (data.name !== undefined) groups.value[idx].name = data.name;
+      if (data.description !== undefined) groups.value[idx].description = data.description;
       if (data.sort_order !== undefined) groups.value[idx].sort_order = data.sort_order;
     }
   }
@@ -64,6 +74,12 @@ export const useGroupStore = defineStore("group", () => {
     await fetchGroups();
   }
 
+  /** 批量从分组移除资源（整批仅触发一次同步广播） */
+  async function removeResources(groupId: string, resourceIds: string[]) {
+    await groupApi.removeResources(groupId, resourceIds);
+    await fetchGroups();
+  }
+
   // 监听资源类型切换 → 重新获取分组
   watch(
     () => ui.currentType,
@@ -74,6 +90,7 @@ export const useGroupStore = defineStore("group", () => {
 
   return {
     groups,
+    allCount,
     loading,
     fetchGroups,
     createGroup,
@@ -81,5 +98,6 @@ export const useGroupStore = defineStore("group", () => {
     deleteGroup,
     addResources,
     removeResource,
+    removeResources,
   };
 });
