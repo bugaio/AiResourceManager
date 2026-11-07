@@ -1,10 +1,10 @@
 <script setup lang="ts">
 import { ref, computed, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { fetchResources, importAgent, importBegin, importEnd } from '@/api/resource'
+import { fetchResources, importMdConfig, importBegin, importEnd } from '@/api/resource'
 import { parseFrontmatter } from '@/utils/frontmatter'
 
-/** SubAgent 导入弹窗
+/** MdConfig 导入弹窗
  *
  * 流程:
  * 1. 父组件传入 webkitdirectory 选择后的 File[]
@@ -64,7 +64,7 @@ async function loadItems() {
       items.value = []
       return
     }
-    const existing = await fetchResources({ type: 'agent', page: 1, page_size: 10000 })
+    const existing = await fetchResources({ type: 'mdconfig', page: 1, page_size: 10000 })
     const existingNames = new Set(existing.list.map(r => r.name))
     // 同批次内重名也算冲突(后端 (type,name) 唯一)
     const seen = new Set<string>()
@@ -134,7 +134,7 @@ async function handleImport() {
   try {
     for (const item of checkedItems.value) {
       try {
-        await importAgent({
+        await importMdConfig({
           name: item.name,
           description: item.description || undefined,
           file: item.file,
@@ -172,7 +172,7 @@ async function handleImport() {
     <template #header>
       <div>
         <div class="text-lg font-semibold text-gray-800 dark:text-gray-100">
-          SubAgent 导入确认
+          MdConfig 导入确认
         </div>
         <div
           class="text-xs text-gray-500 dark:text-gray-400 mt-1 truncate"

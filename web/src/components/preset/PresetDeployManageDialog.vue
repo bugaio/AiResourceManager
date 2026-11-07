@@ -29,6 +29,8 @@ const loading = ref(false)
 const redeploying = ref(false)
 /** config 资源 → 目标路径的（重新）分配选择 */
 const configAssign = ref<Record<string, string>>({})
+/** mdconfig 资源 → 目标目录的（重新）分配选择 */
+const mdconfigAssign = ref<Record<string, string>>({})
 
 /** 打开时拉取该路径组的部署状态 */
 watch(
@@ -53,6 +55,16 @@ async function load() {
       }
     }
     configAssign.value = assign
+    // 初始化 mdconfig 分配
+    const mAssign: Record<string, string> = {}
+    for (const t of status.value.targets) {
+      if (t.type !== 'mdconfig') continue
+      for (const r of t.resources) {
+        if (r.stale) continue
+        mAssign[r.resource_id] = r.current_path || t.target_path || ''
+      }
+    }
+    mdconfigAssign.value = mAssign
   } catch (e: any) {
     ElMessage.error(e?.message || '加载部署状态失败')
     status.value = null
@@ -63,7 +75,7 @@ async function load() {
 
 /** 类型中文 */
 function typeLabel(t: string) {
-  const map: Record<string, string> = { skill: '技能', agent: '子代理', config: '配置', prompt: '提示词' }
+  const map: Record<string, string> = { skill: '技能', mdconfig: 'MdConfig', config: '配置', prompt: '提示词' }
   return map[t] || t
 }
 
@@ -82,13 +94,25 @@ const configPaths = computed<string[]>(() => {
   return [...set]
 })
 
+/** 该路径组所有 mdconfig 目标路径（用于重新分配下拉） */
+const mdconfigPaths = computed<string[]>(() => {
+  if (!status.value) return []
+  const set = new Set<string>()
+  for (const t of status.value.targets) {
+    if (t.type === 'mdconfig' && t.target_path) set.add(t.target_path)
+  }
+  return [...set]
+})
+
 /** 是否存在多条 config 路径（决定是否显示重新分配下拉） */
 const multiConfig = computed(() => configPaths.value.length >= 2)
+
+/** 是否存在多条 mdconfig 路径（决定是否显示重新分配下拉） */
+const multiMdConfig = computed(() => mdconfigPaths.value.length >= 2)
 
 /** 是否有 config 缺目标路径（任一 config 未选目标即为真，与路径条数无关） */
 const hasUnassignedConfig = computed(() => {
   if (!status.value) return false
-  // 收集所有非残留的 config 资源 ID
   const ids = new Set<string>()
   for (const t of status.value.targets) {
     if (t.type !== 'config') continue
@@ -102,6 +126,24 @@ const hasUnassignedConfig = computed(() => {
   return false
 })
 
+/** 是否有 mdconfig 缺目标路径 */
+const hasUnassignedMdConfig = computed(() => {
+  if (!status.value) return false
+  const ids = new Set<string>()
+  for (const t of status.value.targets) {
+    if (t.type !== 'mdconfig') continue
+    for (const r of t.resources) {
+      if (!r.stale) ids.add(r.resource_id)
+    }
+  }
+  for (const id of ids) {
+    if (!mdconfigAssign.value[id]) return true
+  }
+  return false
+})
+
+const hasAnyUnassigned = computed(() => hasUnassignedConfig.value || hasUnassignedMdConfig.value)
+
 /** 漂移总数 */
 const driftTotal = computed(() => (status.value ? status.value.pending + status.value.stale : 0))
 
@@ -111,11 +153,15 @@ function pathLabel(p: string): string {
   return p.slice(0, 20) + '…' + p.slice(-18)
 }
 
-/** 重新部署该路径组（以最新全量资源，补齐新增类型 + 应用 config 重新分配） */
+/** 重新部署该路径组（以最新全量资源，补齐新增类型 + 应用 config/mdconfig 重新分配） */
 async function handleRedeploy() {
-  // 有 config 未选目标 → 拦截
+  // 有 config/mdconfig 未选目标 → 拦截
   if (hasUnassignedConfig.value) {
     ElMessage.warning('请为缺目标的 config 选择路径')
+    return
+  }
+  if (hasUnassignedMdConfig.value) {
+    ElMessage.warning('请为缺目标的 mdconfig 选择路径')
     return
   }
   const msg = driftTotal.value > 0
@@ -132,7 +178,7 @@ async function handleRedeploy() {
   }
   redeploying.value = true
   try {
-    await redeployPresetGroup(props.presetID, props.groupID, configAssign.value)
+    await redeployPresetGroup(props.presetID, props.groupID, configAssign.value, mdconfigAssign.value)
     ElMessage.success('重新部署完成')
     emit('changed')
     dialogVisible.value = false
@@ -240,6 +286,22 @@ function handleClose() {
                       :title="p"
                     />
                   </el-select>
+                  <!-- mdconfig 目标分配下拉：多路径可重选，或待分配行(缺目标)必须选；残留项不可改 -->
+                  <el-select
+                    v-if="t.type === 'mdconfig' && !r.stale && (multiMdConfig || !t.target_path)"
+                    v-model="mdconfigAssign[r.resource_id]"
+                    size="small"
+                    placeholder="选择目标"
+                    class="!w-44 flex-shrink-0"
+                  >
+                    <el-option
+                      v-for="p in mdconfigPaths"
+                      :key="p"
+                      :label="pathLabel(p)"
+                      :value="p"
+                      :title="p"
+                    />
+                  </el-select>
                   <span v-if="r.stale" class="text-xs text-rose-500 flex-shrink-0">残留（重新部署将清理）</span>
                   <span v-else-if="!r.deployed" class="text-xs text-amber-500 flex-shrink-0">新增（重新部署将补齐）</span>
                   <span v-else class="text-xs text-green-500 flex-shrink-0">已部署</span>
@@ -258,10 +320,13 @@ function handleClose() {
       <span v-if="hasUnassignedConfig" class="text-xs text-amber-500 mr-3">
         请为缺目标的 config 选择路径后再重新部署
       </span>
+      <span v-if="hasUnassignedMdConfig" class="text-xs text-amber-500 mr-3">
+        请为缺目标的 mdconfig 选择路径后再重新部署
+      </span>
       <el-button
         type="primary"
         :loading="redeploying"
-        :disabled="!status || status.targets.length === 0 || hasUnassignedConfig"
+        :disabled="!status || status.targets.length === 0 || hasAnyUnassigned"
         @click="handleRedeploy"
       >
         {{ driftTotal > 0 ? '重新部署（同步）' : '重新部署' }}

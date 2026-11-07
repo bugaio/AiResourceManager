@@ -83,7 +83,7 @@ const allGroupsSelected = computed(() =>
 
 /** 当前类型对应的 deploy_type */
 const currentDeployType = computed(() => {
-  // config / prompt 走 merge，skill / agent 走 symlink
+  // config / prompt 走 merge，skill / mdconfig 走 symlink
   return uiStore.currentType === 'config' || uiStore.currentType === 'prompt' ? 'merge' : 'symlink'
 })
 
@@ -162,7 +162,7 @@ async function handleCheck() {
       }
       return
     }
-    const broken = await deployStore.checkHealth()
+    const broken = await deployStore.checkHealth([props.targetInfo.target_path])
     const myBroken = broken.filter(item =>
       props.targetInfo.deployments.some(d => d.items.some(i => i.id === item.id))
     )
@@ -190,7 +190,7 @@ async function handleClear() {
     skill: 'Skill',
     config: 'Config',
     prompt: 'Prompt',
-    agent: 'SubAgent',
+    mdconfig: 'MdConfig',
   }
   const typeName = typeNameMap[uiStore.currentType] || uiStore.currentType
   const deployments = currentTypeDeployments.value

@@ -5,6 +5,7 @@ package repo
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/anthropic/airesourcemanager/internal/model"
 )
@@ -230,6 +231,49 @@ func (r *DeployRepo) GetAllDeploymentItems() ([]model.DeploymentItem, error) {
 	)
 	if err != nil {
 		return nil, fmt.Errorf("查询所有部署明细失败: %w", err)
+	}
+	defer rows.Close()
+
+	var list []model.DeploymentItem
+	for rows.Next() {
+		var item model.DeploymentItem
+		if err := rows.Scan(&item.ID, &item.DeploymentID, &item.ResourceID, &item.LinkPath); err != nil {
+			return nil, fmt.Errorf("扫描部署明细行失败: %w", err)
+		}
+		list = append(list, item)
+	}
+	if list == nil {
+		list = []model.DeploymentItem{}
+	}
+	return list, nil
+}
+
+// GetDeploymentItemsByTargetPaths 获取指定目标路径集合下的部署明细
+// targetPaths 为空时回退到全量查询
+func (r *DeployRepo) GetDeploymentItemsByTargetPaths(targetPaths []string) ([]model.DeploymentItem, error) {
+	if len(targetPaths) == 0 {
+		return r.GetAllDeploymentItems()
+	}
+	r.db.RLock()
+	defer r.db.RUnlock()
+
+	// 构造 IN 占位符
+	placeholders := make([]string, len(targetPaths))
+	args := make([]interface{}, len(targetPaths))
+	for i, p := range targetPaths {
+		placeholders[i] = "?"
+		args[i] = p
+	}
+	query := fmt.Sprintf(
+		`SELECT di.id, di.deployment_id, di.resource_id, di.link_path
+		 FROM deployment_item di
+		 JOIN deployment d ON di.deployment_id = d.id
+		 WHERE d.target_path IN (%s)`,
+		strings.Join(placeholders, ","),
+	)
+	rows, err := r.db.Conn.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("查询目标路径部署明细失败: %w", err)
 	}
 	defer rows.Close()
 

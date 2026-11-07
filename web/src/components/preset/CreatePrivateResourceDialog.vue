@@ -29,7 +29,7 @@ const formRef = ref<FormInstance>()
 const form = reactive({ name: '', description: '' })
 
 const TYPE_LABEL: Record<ResourceType, string> = {
-  skill: 'Skill', agent: 'SubAgent', config: 'Config', prompt: 'Prompt',
+  skill: 'Skill', mdconfig: 'MdConfig', config: 'Config', prompt: 'Prompt',
 }
 
 const rules: FormRules = {

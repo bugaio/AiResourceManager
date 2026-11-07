@@ -15,7 +15,7 @@ const presetActive = computed(() => route.path.startsWith('/presets'))
 /** 资源类型选项 */
 const typeOptions: { label: string; value: ResourceType }[] = [
   { label: 'Skill', value: 'skill' },
-  { label: 'SubAgent', value: 'agent' },
+  { label: 'MdConfig', value: 'mdconfig' },
   { label: 'Config', value: 'config' },
   { label: 'Prompt', value: 'prompt' },
 ]

@@ -19,7 +19,7 @@ export interface Frontmatter {
   description?: string
 }
 
-/** 提取 SKILL.md / agent.md 顶部 --- 包裹的 frontmatter,返回解析后的对象 */
+/** 提取 SKILL.md / mdconfig.md 顶部 --- 包裹的 frontmatter,返回解析后的对象 */
 export function parseFrontmatter(text: string): Frontmatter {
   const m = text.match(/^---\s*\r?\n([\s\S]*?)\r?\n---/)
   if (!m) return {}

@@ -93,13 +93,13 @@ export function importSkill(params: {
   })
 }
 
-/** 导入 agent: 单个 .md 文件原样上传,后端落到 ~/.aiManager/agents/{uuid}.md
+/** 导入 mdconfig: 单个 .md 文件原样上传,后端落到 ~/.aiManager/mdconfigs/{uuid}.md
  * @param params.name 从 frontmatter 解析的名称
  * @param params.description 从 frontmatter 解析的描述(可空)
  * @param params.groupId 关联分组(可选)
  * @param params.file 源 .md 文件
  */
-export function importAgent(params: {
+export function importMdConfig(params: {
   name: string
   description?: string
   groupId?: string
@@ -110,7 +110,7 @@ export function importAgent(params: {
   if (params.description) fd.append('description', params.description)
   if (params.groupId) fd.append('group_id', params.groupId)
   fd.append('file', params.file)
-  return request.post('/resources/import-agent', fd, {
+  return request.post('/resources/import-mdconfig', fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }

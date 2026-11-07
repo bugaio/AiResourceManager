@@ -26,7 +26,7 @@ const resourceLabel = computed(() => {
   switch (uiStore.currentType) {
     case 'prompt': return 'Prompt'
     case 'skill':  return 'Skill'
-    case 'agent':  return 'Agent'
+    case 'mdconfig':  return 'MdConfig'
     case 'config': return 'Config'
     default:       return 'Config'
   }
@@ -37,7 +37,7 @@ const resourceUnit = computed(() => {
   switch (uiStore.currentType) {
     case 'prompt': return '提示词内容'
     case 'skill':  return 'Skill 内容'
-    case 'agent':  return 'Agent 内容'
+    case 'mdconfig':  return 'Agent 内容'
     case 'config': return '配置键'
     default:       return '配置项'
   }

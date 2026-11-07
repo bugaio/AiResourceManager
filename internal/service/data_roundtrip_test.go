@@ -55,11 +55,11 @@ func TestExportImportRoundTrip(t *testing.T) {
 	// preset + 关联 u-config + 一个私有 agent
 	srcPre.InsertPreset(&model.Preset{ID: "p1", Name: "预设一"})
 	srcPre.LinkResources("p1", []string{"u-config"})
-	privPath := filepath.Join(srcBase, "presets", "p1", "agents", "u-priv.md")
+	privPath := filepath.Join(srcBase, "presets", "p1", "mdconfigs", "u-priv.md")
 	os.MkdirAll(filepath.Dir(privPath), 0755)
 	os.WriteFile(privPath, []byte("# private agent"), 0644)
 	pid := "p1"
-	srcRes.InsertResource(&model.Resource{ID: "u-priv", Name: "私有助手", Type: "agent", Path: privPath, Metadata: "{}", OwnerPresetID: &pid})
+	srcRes.InsertResource(&model.Resource{ID: "u-priv", Name: "私有助手", Type: "mdconfig", Path: privPath, Metadata: "{}", OwnerPresetID: &pid})
 
 	// --- 导出 ---
 	exportDir := filepath.Join(t.TempDir(), "export")
@@ -76,7 +76,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	if !util.FileExists(filepath.Join(exportDir, "files", "skills", "u-skill", "SKILL.md")) {
 		t.Fatal("skill 文件未导出")
 	}
-	if !util.FileExists(filepath.Join(exportDir, "files", "presets", "p1", "agents", "u-priv.md")) {
+	if !util.FileExists(filepath.Join(exportDir, "files", "presets", "p1", "mdconfigs", "u-priv.md")) {
 		t.Fatal("私有 agent 文件未导出")
 	}
 

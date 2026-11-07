@@ -25,8 +25,14 @@ const deployStore = useDeployStore()
 /** 路径组检查状态 — 防止重复点击 */
 const checkingGroups = ref<Set<string>>(new Set())
 
-/** 各路径组下 broken item 映射 — preset.id → Set<itemId> */
+/** 各路径组下 broken item 映射 — `${preset.id}::${group.id}` → Set<itemId>
+ *  按路径组隔离，防止不同路径组的健康检查结果互相污染同一 preset 的显示 */
 const brokenItemsByPreset = ref<Record<string, Set<string>>>({})
+
+/** 生成 broken map 的 key：preset + 路径组维度隔离 */
+function brokenKey(presetId: string, groupId: string): string {
+  return `${presetId}::${groupId}`
+}
 
 const presetCollapsed = ref(false)
 const pathGroupCollapsed = ref(false)
@@ -65,7 +71,7 @@ const deployedPresetsByGroup = computed(() => {
   const map: Record<string, GroupDeployedPreset[]> = {}
   for (const g of pathGroupStore.pathGroups) {
     const groupPaths = new Set(
-      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean)
+      [g.skill_path, ...(g.mdconfig_paths && g.mdconfig_paths.length > 0 ? g.mdconfig_paths : (g.mdconfig_path ? [g.mdconfig_path] : [])), ...(g.config_paths || []), g.prompt_path].filter(Boolean)
     )
     const items: GroupDeployedPreset[] = []
     for (const p of presetStore.presets) {
@@ -152,7 +158,7 @@ async function handleCheckGroup(g: PathGroup) {
   try {
     // 1. 收集该路径组涉及的目标路径
     const targetPaths = new Set<string>(
-      [g.skill_path, g.agent_path, ...(g.config_paths || []), g.prompt_path].filter(Boolean),
+      [g.skill_path, ...(g.mdconfig_paths && g.mdconfig_paths.length > 0 ? g.mdconfig_paths : (g.mdconfig_path ? [g.mdconfig_path] : [])), ...(g.config_paths || []), g.prompt_path].filter(Boolean),
     )
 
     // 2. 检查每个目标路径是否还存在；不存在则自动撤销关联部署
@@ -183,8 +189,8 @@ async function handleCheckGroup(g: PathGroup) {
       await presetStore.fetchPresets()
     }
 
-    // 3. 全局 health check,过滤出属于该路径组涉及目标的 broken 项
-    const broken = await deployStore.checkHealth()
+    // 3. 只检查该路径组涉及的目标路径，精确查询而非全量扫描
+    const broken = await deployStore.checkHealth([...targetPaths])
     // 该路径组的 deployment id 集合（刷新前的快照已经够用）
     const groupDeploymentIDs = new Set<string>()
     for (const item of items) {
@@ -194,16 +200,17 @@ async function handleCheckGroup(g: PathGroup) {
     }
     const myBroken = broken.filter((b) => groupDeploymentIDs.has(b.deployment_id))
 
-    // 4. 把 broken 按 preset 分组存入,模板会显示标记和修复按钮
+    // 4. 把 broken 按 (preset, 路径组) 分组存入，模板会显示标记和修复按钮
     //    先清除该路径组下旧的 broken 记录(防止已修复的项残留)
+    //    key = brokenKey(preset.id, group.id)，按路径组隔离，不同路径组互不污染
     const newBrokenMap: Record<string, Set<string>> = { ...brokenItemsByPreset.value }
     for (const item of items) {
-      newBrokenMap[item.preset.id] = new Set()
+      newBrokenMap[brokenKey(item.preset.id, g.id)] = new Set()
     }
     for (const b of myBroken) {
       for (const item of items) {
         if (item.matchedDeployments.some((d) => d.id === b.deployment_id)) {
-          newBrokenMap[item.preset.id].add(b.id)
+          newBrokenMap[brokenKey(item.preset.id, g.id)].add(b.id)
         }
       }
     }
@@ -235,12 +242,13 @@ async function handleCheckGroup(g: PathGroup) {
 }
 
 /** 修复某 preset 在此路径组下的所有 broken item */
-async function handleRepairPreset(item: GroupDeployedPreset) {
-  const brokenIDs = brokenItemsByPreset.value[item.preset.id]
+async function handleRepairPreset(item: GroupDeployedPreset, groupId: string) {
+  const brokenIDs = brokenItemsByPreset.value[brokenKey(item.preset.id, groupId)]
   if (!brokenIDs || brokenIDs.size === 0) return
   // broken itemId 不直接给我们 deployment_id,需要重新拿一次 health 找到 (deployment_id, item_id) 对
   try {
-    const broken = await deployStore.checkHealth()
+    const repairTargetPaths = [...new Set(item.matchedDeployments.map((d) => d.target_path))]
+    const broken = await deployStore.checkHealth(repairTargetPaths)
     const pairs: Array<{ depID: string; itemID: string }> = []
     const matchedDepIDs = new Set(item.matchedDeployments.map((d) => d.id))
     for (const b of broken) {
@@ -250,7 +258,7 @@ async function handleRepairPreset(item: GroupDeployedPreset) {
     }
     if (pairs.length === 0) {
       ElMessage.info('没有可修复的异常项')
-      brokenItemsByPreset.value = { ...brokenItemsByPreset.value, [item.preset.id]: new Set() }
+      brokenItemsByPreset.value = { ...brokenItemsByPreset.value, [brokenKey(item.preset.id, groupId)]: new Set() }
       return
     }
     let failCount = 0
@@ -266,8 +274,8 @@ async function handleRepairPreset(item: GroupDeployedPreset) {
     } else {
       ElMessage.success(`已修复 ${pairs.length} 项`)
     }
-    // 清除该 preset 的 broken 标记
-    brokenItemsByPreset.value = { ...brokenItemsByPreset.value, [item.preset.id]: new Set() }
+    // 清除该 preset 在该路径组的 broken 标记
+    brokenItemsByPreset.value = { ...brokenItemsByPreset.value, [brokenKey(item.preset.id, groupId)]: new Set() }
   } catch (e: any) {
     ElMessage.error(e?.message || '修复失败')
   }
@@ -322,7 +330,7 @@ function groupMissingTypes(groupID: string): string[] {
     for (const t of d?.missing_types || []) set.add(t)
   }
   // 固定顺序输出
-  return ['skill', 'agent', 'config', 'prompt'].filter((t) => set.has(t))
+  return ['skill', 'mdconfig', 'config', 'prompt'].filter((t) => set.has(t))
 }
 
 /**
@@ -475,7 +483,10 @@ async function confirmDeletePathGroup(g: PathGroup) {
 function pathGroupBrief(g: PathGroup): string {
   const items: string[] = []
   if (g.skill_path) items.push('skill')
-  if (g.agent_path) items.push('agent')
+  if ((g.mdconfig_paths && g.mdconfig_paths.length > 0) || g.mdconfig_path) {
+    const n = g.mdconfig_paths?.length || (g.mdconfig_path ? 1 : 0)
+    items.push(n > 1 ? `mdconfig×${n}` : 'mdconfig')
+  }
   if ((g.config_paths && g.config_paths.length > 0) || g.config_path) {
     const n = g.config_paths?.length || (g.config_path ? 1 : 0)
     items.push(n > 1 ? `config×${n}` : 'config')
@@ -734,11 +745,11 @@ function isRandomGroup(g: PathGroup): boolean {
                 title="跟踪变更"
               >🔗</span>
               <!-- broken 标记 + 修复按钮 -->
-              <template v-if="brokenItemsByPreset[item.preset.id]?.size">
-                <span class="text-[10px] text-orange-500 flex-shrink-0">⚠️{{ brokenItemsByPreset[item.preset.id]?.size }}</span>
+              <template v-if="brokenItemsByPreset[brokenKey(item.preset.id, g.id)]?.size">
+                <span class="text-[10px] text-orange-500 flex-shrink-0">⚠️{{ brokenItemsByPreset[brokenKey(item.preset.id, g.id)]?.size }}</span>
                 <button
                   class="text-[10px] text-blue-500 hover:text-blue-600 flex-shrink-0"
-                  @click.stop="handleRepairPreset(item)"
+                  @click.stop="handleRepairPreset(item, g.id)"
                 >修复</button>
               </template>
               <button

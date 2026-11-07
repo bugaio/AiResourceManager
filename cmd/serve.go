@@ -74,22 +74,27 @@ func runServe(cmd *cobra.Command, args []string) error {
 		sugar.Fatalf("初始化数据库失败: %v", err)
 	}
 
+	// 获取资源根目录（迁移需要，提前到此处）
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		sugar.Fatalf("获取主目录失败: %v", err)
+	}
+	baseDir := filepath.Join(homeDir, ".aiManager")
+
 	// 执行迁移
 	if err := repo.RunMigrations(database); err != nil {
 		sugar.Fatalf("数据库迁移失败: %v", err)
 	}
 	sugar.Info("数据库迁移完成")
 
+	// 把旧 agents/ 下的 mdconfig 资源迁移到 mdconfigs/（agent→mdconfig 重命名后的一次性文件迁移）
+	if err := repo.MigrateAgentFilesToMdConfig(database, baseDir); err != nil {
+		sugar.Warnf("agent 文件迁移失败: %v", err)
+	}
+
 	// 启动 WebSocket Hub
 	hub := service.NewHub(logger)
 	go hub.Run()
-
-	// 获取资源根目录
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		sugar.Fatalf("获取主目录失败: %v", err)
-	}
-	baseDir := filepath.Join(homeDir, ".aiManager")
 
 	// 创建资源服务
 	resourceRepo := repo.NewResourceRepo(database)

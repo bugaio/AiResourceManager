@@ -4,11 +4,11 @@ import { useUiStore } from '@/stores/ui'
 import type { ResourceType } from '@/types/resource'
 
 /** 资源类型集合，用于路由约束与守卫校验 */
-const RESOURCE_TYPES: ResourceType[] = ['skill', 'agent', 'config', 'prompt']
+const RESOURCE_TYPES: ResourceType[] = ['skill', 'mdconfig', 'config', 'prompt']
 
 /** 路由配置表
  *
- * 资源类型(skill/agent/config/prompt)各占一个顶层 URL，刷新后由路由守卫
+ * 资源类型(skill/mdconfig/config/prompt)各占一个顶层 URL，刷新后由路由守卫
  * 还原 uiStore.currentType，从而停留在对应模块；preset 为独立路由。
  */
 const routes: RouteRecordRaw[] = [
@@ -18,7 +18,7 @@ const routes: RouteRecordRaw[] = [
   },
   {
     // 4 个资源类型共用 ResourcesView，类型由 :type 段承载
-    path: '/:type(skill|agent|config|prompt)',
+    path: '/:type(skill|mdconfig|config|prompt)',
     name: 'Resources',
     component: () => import('@/views/ResourcesView.vue'),
   },

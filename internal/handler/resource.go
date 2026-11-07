@@ -31,9 +31,9 @@ func RegisterResourceRoutes(group *gin.RouterGroup, h *ResourceHandler) {
 	{
 		r.GET("", h.handleList)
 		r.POST("", h.handleCreate)
-		// import-skill / import-agent 必须在 :id 之前注册
+		// import-skill / import-mdconfig 必须在 :id 之前注册
 		r.POST("/import-skill", h.handleImportSkill)
-		r.POST("/import-agent", h.handleImportAgent)
+		r.POST("/import-mdconfig", h.handleImportMdConfig)
 		// 批量导入前后包一层写入锁,抑制 watcher 逐个文件的 updated 广播
 		r.POST("/import/begin", h.handleImportBegin)
 		r.POST("/import/end", h.handleImportEnd)
@@ -265,13 +265,13 @@ func (h *ResourceHandler) handleImportEnd(c *gin.Context) {
 	Success(c, nil)
 }
 
-// handleImportAgent 处理 agent 单文件导入
+// handleImportMdConfig 处理 mdconfig 单文件导入
 // multipart/form-data 字段:
 //   name        — 从源 .md frontmatter 解析的名称(必填)
 //   description — 从源 .md frontmatter 解析的描述(可选)
 //   group_id    — 关联分组 ID(可选)
 //   file        — 源 .md 文件(单文件)
-func (h *ResourceHandler) handleImportAgent(c *gin.Context) {
+func (h *ResourceHandler) handleImportMdConfig(c *gin.Context) {
 	name := c.PostForm("name")
 	description := c.PostForm("description")
 	groupID := c.PostForm("group_id")
@@ -293,7 +293,7 @@ func (h *ResourceHandler) handleImportAgent(c *gin.Context) {
 		return
 	}
 
-	resource, err := h.svc.ImportAgent(name, description, groupID, data)
+	resource, err := h.svc.ImportMdConfig(name, description, groupID, data)
 	if err != nil {
 		handleBizError(c, err)
 		return

@@ -29,7 +29,7 @@ const submitting = ref(false)
 const form = reactive({
   name: '',
   skill_path: '',
-  agent_path: '',
+  mdconfig_paths: [''] as string[],
   config_paths: [''] as string[],
   prompt_path: '',
 })
@@ -46,10 +46,19 @@ const rules: FormRules = {
 }
 
 const TYPE_LABEL: Record<string, string> = {
-  skill: 'Skill', agent: 'Agent', config: 'Config', prompt: 'Prompt',
+  skill: 'Skill', mdconfig: 'MdConfig', config: 'Config', prompt: 'Prompt',
 }
 function isRequired(type: string): boolean {
   return !!props.requiredTypes?.includes(type)
+}
+
+/** 增删 mdconfig 路径输入框 */
+function addMdConfigPath() {
+  form.mdconfig_paths.push('')
+}
+function removeMdConfigPath(idx: number) {
+  form.mdconfig_paths.splice(idx, 1)
+  if (form.mdconfig_paths.length === 0) form.mdconfig_paths.push('')
 }
 
 /** 增删 config 路径输入框 */
@@ -70,7 +79,10 @@ watch(
       // 随机名路径组：名称暂留空（等用户开启开关再填真名），否则回显原名
       form.name = isRandomGroupName(props.pathGroup.name) ? '' : props.pathGroup.name
       form.skill_path = props.pathGroup.skill_path
-      form.agent_path = props.pathGroup.agent_path
+      const mps = props.pathGroup.mdconfig_paths && props.pathGroup.mdconfig_paths.length > 0
+        ? [...props.pathGroup.mdconfig_paths]
+        : (props.pathGroup.mdconfig_path ? [props.pathGroup.mdconfig_path] : [])
+      form.mdconfig_paths = mps.length > 0 ? mps : ['']
       const cps = props.pathGroup.config_paths && props.pathGroup.config_paths.length > 0
         ? [...props.pathGroup.config_paths]
         : (props.pathGroup.config_path ? [props.pathGroup.config_path] : [])
@@ -79,7 +91,7 @@ watch(
     } else {
       form.name = ''
       form.skill_path = ''
-      form.agent_path = ''
+      form.mdconfig_paths = ['']
       form.config_paths = ['']
       form.prompt_path = ''
     }
@@ -89,13 +101,16 @@ watch(
 /** 校验子路径，返回错误消息（空串表示通过） */
 function validatePaths(): string {
   const skill = form.skill_path.trim()
-  const agent = form.agent_path.trim()
   const prompt = form.prompt_path.trim()
   const configs = form.config_paths.map((p) => p.trim()).filter(Boolean)
+  const mdconfigs = form.mdconfig_paths.map((p) => p.trim()).filter(Boolean)
 
-  if (!skill && !agent && configs.length === 0 && !prompt) return '至少需要填写一个子路径'
+  if (!skill && mdconfigs.length === 0 && configs.length === 0 && !prompt) return '至少需要填写一个子路径'
   if (skill && !isDirectoryPath(skill)) return 'skill_path 必须是目录路径（不能带文件后缀）'
-  if (agent && !isDirectoryPath(agent)) return 'agent_path 必须是目录路径（不能带文件后缀）'
+  for (const m of mdconfigs) {
+    if (!isDirectoryPath(m)) return 'mdconfig_path 必须是目录路径（不能带文件后缀）'
+  }
+  if (new Set(mdconfigs).size !== mdconfigs.length) return 'mdconfig 路径有重复'
   if (prompt && !isPromptFilePath(prompt)) return 'prompt_path 后缀必须是 .md'
   for (const c of configs) {
     if (!isConfigFilePath(c)) return 'config 路径后缀必须是 .json/.jsonc/.yaml/.yml/.toml'
@@ -110,6 +125,13 @@ async function handleSubmit() {
 
   // 补全「未配置」场景：被要求必填的类型子路径不得为空
   for (const t of props.requiredTypes || []) {
+    if (t === 'mdconfig') {
+      if (form.mdconfig_paths.every((p) => !p.trim())) {
+        ElMessage.warning('请填写 MdConfig 路径')
+        return
+      }
+      continue
+    }
     if (t === 'config') {
       if (form.config_paths.every((p) => !p.trim())) {
         ElMessage.warning('请填写 Config 路径')
@@ -117,7 +139,7 @@ async function handleSubmit() {
       }
       continue
     }
-    const key = (t + '_path') as 'skill_path' | 'agent_path' | 'prompt_path'
+    const key = (t + '_path') as 'skill_path' | 'prompt_path'
     if (!form[key].trim()) {
       ElMessage.warning(`请填写 ${TYPE_LABEL[t] || t} 路径`)
       return
@@ -142,6 +164,7 @@ async function handleSubmit() {
   }
 
   const configPaths = form.config_paths.map((p) => p.trim()).filter(Boolean)
+  const mdconfigPaths = form.mdconfig_paths.map((p) => p.trim()).filter(Boolean)
 
   // 编辑模式：检测被删除的 config 子路径下是否有已部署内容，有则询问是否移除
   if (props.mode === 'edit' && props.pathGroup) {
@@ -191,7 +214,7 @@ async function handleSubmit() {
       await store.createPathGroup({
         name: finalName,
         skill_path: form.skill_path.trim(),
-        agent_path: form.agent_path.trim(),
+        mdconfig_paths: mdconfigPaths,
         config_paths: configPaths,
         prompt_path: form.prompt_path.trim(),
       })
@@ -200,7 +223,7 @@ async function handleSubmit() {
       await store.updatePathGroup(props.pathGroup.id, {
         name: finalName,
         skill_path: form.skill_path.trim(),
-        agent_path: form.agent_path.trim(),
+        mdconfig_paths: mdconfigPaths,
         config_paths: configPaths,
         prompt_path: form.prompt_path.trim(),
       })
@@ -232,8 +255,39 @@ async function handleSubmit() {
       <el-form-item label="Skill 路径" :required="isRequired('skill')">
         <el-input v-model="form.skill_path" placeholder="目录路径（支持 ~）" />
       </el-form-item>
-      <el-form-item label="Agent 路径" :required="isRequired('agent')">
-        <el-input v-model="form.agent_path" placeholder="目录路径（支持 ~）" />
+      <!-- MdConfig 多路径：每行一个输入框，末行后带「+」可继续添加 -->
+      <el-form-item label="MdConfig 路径" :required="isRequired('mdconfig')">
+        <div class="w-full flex flex-col gap-2">
+          <div
+            v-for="(_, idx) in form.mdconfig_paths"
+            :key="'md-' + idx"
+            class="flex items-center gap-2"
+          >
+            <el-input
+              v-model="form.mdconfig_paths[idx]"
+              placeholder="目录路径（支持 ~）"
+            />
+            <el-button
+              v-if="form.mdconfig_paths.length > 1"
+              text
+              :icon="undefined"
+              class="!px-2 text-gray-400 hover:!text-red-500"
+              title="删除此路径"
+              @click="removeMdConfigPath(idx)"
+            >✕</el-button>
+            <el-button
+              v-if="idx === form.mdconfig_paths.length - 1"
+              text
+              type="primary"
+              class="!px-2"
+              title="添加一条 mdconfig 路径"
+              @click="addMdConfigPath"
+            >＋</el-button>
+          </div>
+          <p class="text-xs text-gray-400">
+            可添加多条 mdconfig 路径；部署时为 Preset 中每个 mdconfig 资源分别选择目标
+          </p>
+        </div>
       </el-form-item>
       <!-- Config 多路径：每行一个输入框，末行后带「+」可继续添加 -->
       <el-form-item label="Config 路径" :required="isRequired('config')">

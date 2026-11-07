@@ -42,8 +42,8 @@ export const useDeployStore = defineStore('deploy', () => {
   }
 
   /** 健康检查 */
-  async function checkHealth(): Promise<DeploymentItem[]> {
-    const broken = await deployApi.checkHealth()
+  async function checkHealth(targetPaths?: string[]): Promise<DeploymentItem[]> {
+    const broken = await deployApi.checkHealth(targetPaths)
     // 检查后刷新targets以更新状态
     await fetchTargets()
     return broken

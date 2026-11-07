@@ -82,7 +82,7 @@ func (s *ResourceService) CreatePrivateResource(presetID string, req *model.Crea
 func (s *ResourceService) createResourceInternal(req *model.CreateResourceReq, ownerPresetID *string) (*model.Resource, error) {
 	// 校验类型
 	if !isValidType(req.Type) {
-		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/agent/config/prompt")
+		return nil, model.NewBizError(model.ErrParamValidation, "type 必须为 skill/mdconfig/config/prompt")
 	}
 	// 校验名称
 	if strings.TrimSpace(req.Name) == "" {
@@ -248,25 +248,25 @@ func sanitizeRelPath(p string) (string, error) {
 	return clean, nil
 }
 
-// ImportAgent 导入一个 agent: 把外部 .md 文件原样写入 {baseDir}/agents/{uuid}.md
+// ImportMdConfig 导入一个 mdconfig: 把外部 .md 文件原样写入 {baseDir}/mdconfigs/{uuid}.md
 // 参数 name: 从 frontmatter 解析得到的名称(必填)
 // 参数 description: 从 frontmatter 解析得到的描述(可空)
 // 参数 groupID: 可选关联分组
 // 参数 data: 源 .md 文件原始字节
 // 返回: 创建的资源、错误
-func (s *ResourceService) ImportAgent(name, description, groupID string, data []byte) (*model.Resource, error) {
-	return s.importAgentInternal(name, description, groupID, data, nil)
+func (s *ResourceService) ImportMdConfig(name, description, groupID string, data []byte) (*model.Resource, error) {
+	return s.importMdConfigInternal(name, description, groupID, data, nil)
 }
 
-// ImportPrivateAgent 导入私有 agent（owner_preset_id 非空）
-func (s *ResourceService) ImportPrivateAgent(presetID, name, description string, data []byte) (*model.Resource, error) {
+// ImportPrivateMdConfig 导入私有 mdconfig（owner_preset_id 非空）
+func (s *ResourceService) ImportPrivateMdConfig(presetID, name, description string, data []byte) (*model.Resource, error) {
 	if strings.TrimSpace(presetID) == "" {
 		return nil, model.NewBizError(model.ErrParamValidation, "presetID 不能为空")
 	}
-	return s.importAgentInternal(name, description, "", data, &presetID)
+	return s.importMdConfigInternal(name, description, "", data, &presetID)
 }
 
-func (s *ResourceService) importAgentInternal(name, description, groupID string, data []byte, ownerPresetID *string) (*model.Resource, error) {
+func (s *ResourceService) importMdConfigInternal(name, description, groupID string, data []byte, ownerPresetID *string) (*model.Resource, error) {
 	if strings.TrimSpace(name) == "" {
 		return nil, model.NewBizError(model.ErrParamValidation, "name 不能为空")
 	}
@@ -275,7 +275,7 @@ func (s *ResourceService) importAgentInternal(name, description, groupID string,
 	}
 
 	// 同类型重名校验(与 CreateResource 一致)
-	exists, err := s.repo.CheckNameExists("agent", name, "")
+	exists, err := s.repo.CheckNameExists("mdconfig", name, "")
 	if err != nil {
 		return nil, model.NewBizError(model.ErrResourceFileIO, err.Error())
 	}
@@ -284,20 +284,20 @@ func (s *ResourceService) importAgentInternal(name, description, groupID string,
 	}
 
 	uuid := util.NewUUID()
-	dir := s.typeDir("agent", ownerPresetID)
+	dir := s.typeDir("mdconfig", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 agents 目录失败: "+err.Error())
+		return nil, model.NewBizError(model.ErrResourceFileIO, "创建 mdconfigs 目录失败: "+err.Error())
 	}
 	filePath := filepath.Join(dir, uuid+".md")
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
-		return nil, model.NewBizError(model.ErrResourceFileIO, "写入 agent 文件失败: "+err.Error())
+		return nil, model.NewBizError(model.ErrResourceFileIO, "写入 mdconfig 文件失败: "+err.Error())
 	}
 
 	now := timeNow()
 	resource := &model.Resource{
 		ID:            uuid,
 		Name:          name,
-		Type:          "agent",
+		Type:          "mdconfig",
 		Path:          filePath,
 		Description:   description,
 		Metadata:      "{}",
@@ -630,8 +630,8 @@ func (s *ResourceService) createFiles(resourceType, name, uuid, description stri
 	switch resourceType {
 	case "skill":
 		return s.createSkillFiles(name, uuid, description, ownerPresetID)
-	case "agent":
-		return s.createAgentFile(name, uuid, ownerPresetID)
+	case "mdconfig":
+		return s.createMdConfigFile(name, uuid, ownerPresetID)
 	case "config":
 		return s.createConfigFile(name, uuid, ownerPresetID)
 	case "prompt":
@@ -658,8 +658,8 @@ func typeSubdir(resourceType string) string {
 	switch resourceType {
 	case "skill":
 		return "skills"
-	case "agent":
-		return "agents"
+	case "mdconfig":
+		return "mdconfigs"
 	case "config":
 		return "configs"
 	case "prompt":
@@ -702,14 +702,14 @@ func (s *ResourceService) createSkillFiles(name, uuid, description string, owner
 	return dir, nil
 }
 
-// createAgentFile 创建 agent 类型的文件: {baseDir}/agents/{uuid}.md
-// 参数 name: agent 名称
+// createMdConfigFile 创建 mdconfig 类型的文件: {baseDir}/mdconfigs/{uuid}.md
+// 参数 name: mdconfig 名称
 // 参数 uuid: UUID
 // 返回: 文件路径、错误信息
-func (s *ResourceService) createAgentFile(name, uuid string, ownerPresetID *string) (string, error) {
-	dir := s.typeDir("agent", ownerPresetID)
+func (s *ResourceService) createMdConfigFile(name, uuid string, ownerPresetID *string) (string, error) {
+	dir := s.typeDir("mdconfig", ownerPresetID)
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return "", fmt.Errorf("创建 agents 目录失败: %w", err)
+		return "", fmt.Errorf("创建 mdconfigs 目录失败: %w", err)
 	}
 
 	filePath := filepath.Join(dir, uuid+".md")
@@ -719,7 +719,7 @@ func (s *ResourceService) createAgentFile(name, uuid string, ownerPresetID *stri
 		content = fmt.Sprintf("# %s\n\n", name)
 	}
 	if err := os.WriteFile(filePath, []byte(content), 0644); err != nil {
-		return "", fmt.Errorf("写入 agent 文件失败: %w", err)
+		return "", fmt.Errorf("写入 mdconfig 文件失败: %w", err)
 	}
 
 	return filePath, nil
@@ -807,7 +807,7 @@ func (s *ResourceService) deleteFiles(resourceType, path string) {
 // 参数 t: 类型字符串
 // 返回: 是否合法
 func isValidType(t string) bool {
-	return t == "skill" || t == "agent" || t == "config" || t == "prompt"
+	return t == "skill" || t == "mdconfig" || t == "config" || t == "prompt"
 }
 
 // timeNow 获取当前时间的辅助函数（方便测试 mock）

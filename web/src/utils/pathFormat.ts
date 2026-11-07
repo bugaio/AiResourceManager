@@ -14,7 +14,7 @@ export function isPromptFilePath(p: string): boolean {
   return /\.md$/i.test(p.trim())
 }
 
-/** skill / agent 路径必须是目录（不能以已知文件后缀结尾） */
+/** skill / mdconfig 路径必须是目录（不能以已知文件后缀结尾） */
 const FILE_LIKE_SUFFIXES = [
   ...CONFIG_SUFFIXES,
   '.md',
@@ -33,19 +33,19 @@ export function isDirectoryPath(p: string): boolean {
 /** 校验路径组 4 子路径，返回错误消息(空字符串表示通过) */
 export function validatePathGroupPaths(p: {
   skill_path: string
-  agent_path: string
+  mdconfig_path: string
   config_path: string
   prompt_path: string
 }): string {
   const skill = (p.skill_path || '').trim()
-  const agent = (p.agent_path || '').trim()
+  const mdconfig = (p.mdconfig_path || '').trim()
   const config = (p.config_path || '').trim()
   const prompt = (p.prompt_path || '').trim()
 
-  if (!skill && !agent && !config && !prompt) return '至少需要填写一个子路径'
+  if (!skill && !mdconfig && !config && !prompt) return '至少需要填写一个子路径'
 
   if (skill && !isDirectoryPath(skill)) return 'skill_path 必须是目录路径（不能带文件后缀）'
-  if (agent && !isDirectoryPath(agent)) return 'agent_path 必须是目录路径（不能带文件后缀）'
+  if (mdconfig && !isDirectoryPath(mdconfig)) return 'mdconfig_path 必须是目录路径（不能带文件后缀）'
   if (config && !isConfigFilePath(config))
     return 'config_path 后缀必须是 .json/.jsonc/.yaml/.yml/.toml'
   if (prompt && !isPromptFilePath(prompt)) return 'prompt_path 后缀必须是 .md'

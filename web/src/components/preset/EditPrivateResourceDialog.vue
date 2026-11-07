@@ -30,7 +30,7 @@ const submitting = ref(false)
 const form = reactive({ name: '', description: '' })
 
 const TYPE_LABEL: Record<string, string> = {
-  skill: 'Skill', agent: 'SubAgent', config: 'Config', prompt: 'Prompt',
+  skill: 'Skill', mdconfig: 'MdConfig', config: 'Config', prompt: 'Prompt',
 }
 
 const rules: FormRules = {

@@ -5,7 +5,7 @@ import { useUiStore } from './ui'
 import { useSelectionStore } from './selection'
 import type { Resource, ResourceType } from '@/types/resource'
 
-/** 单个资源类型(skill/agent/config/prompt)各自独立的列表状态 */
+/** 单个资源类型(skill/mdconfig/config/prompt)各自独立的列表状态 */
 interface TypeState {
   resources: Resource[]
   loading: boolean
@@ -20,7 +20,7 @@ interface TypeState {
   filterGroupIds: string[]
 }
 
-const ALL_TYPES: ResourceType[] = ['skill', 'agent', 'config', 'prompt']
+const ALL_TYPES: ResourceType[] = ['skill', 'mdconfig', 'config', 'prompt']
 
 /** 后端哨兵值：group_id 传此值表示「仅查未分组资源」 */
 const GROUP_UNGROUPED = '__ungrouped__'
@@ -53,7 +53,7 @@ export const useResourceStore = defineStore('resource', () => {
   // 按 type 分桶的状态
   const states = ref<Record<ResourceType, TypeState>>({
     skill: emptyState(),
-    agent: emptyState(),
+    mdconfig: emptyState(),
     config: emptyState(),
     prompt: emptyState(),
   })

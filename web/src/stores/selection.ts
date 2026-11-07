@@ -6,7 +6,7 @@ import type { ResourceType } from '@/types/resource'
 /** 选择状态管理 — 按 ResourceType 隔离独立选择集
  *
  * 设计原则:
- * - 各 Set 完全独立(skill / agent / config / prompt),互不影响
+ * - 各 Set 完全独立(skill / mdconfig / config / prompt),互不影响
  * - 默认所有读写以 ui.currentType 为目标,保持调用方零改动
  * - 提供 *ForType 系列方法,允许显式指定 type(给各 BatchBar 用)
  */
@@ -15,7 +15,7 @@ export const useSelectionStore = defineStore('selection', () => {
 
   const buckets = ref<Record<ResourceType, Set<string>>>({
     skill: new Set<string>(),
-    agent: new Set<string>(),
+    mdconfig: new Set<string>(),
     config: new Set<string>(),
     prompt: new Set<string>(),
   })

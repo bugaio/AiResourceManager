@@ -26,3 +26,8 @@ Thumbs.db
 # 运行时数据
 *.db
 *.log
+
+# 工具目录
+.aiResource/
+.mcp.json
+.claude/

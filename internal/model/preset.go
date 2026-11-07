@@ -82,12 +82,15 @@ type ResourceDeleteBlockedData struct {
 //
 // ConfigPaths 为多条 config 目标（手动模式多路径）；ConfigPath 为单条兼容值。
 // 优先使用 ConfigPaths。
+// MdConfigPaths 为多条 mdconfig 目标；MdConfigPath 为单条兼容值。
+// 优先使用 MdConfigPaths。
 type PathSpec struct {
-	SkillPath   string   `json:"skill_path"`
-	AgentPath   string   `json:"agent_path"`
-	ConfigPath  string   `json:"config_path"`
-	ConfigPaths []string `json:"config_paths"`
-	PromptPath  string   `json:"prompt_path"`
+	SkillPath      string   `json:"skill_path"`
+	MdConfigPath   string   `json:"mdconfig_path"`
+	MdConfigPaths  []string `json:"mdconfig_paths"`
+	ConfigPath     string   `json:"config_path"`
+	ConfigPaths    []string `json:"config_paths"`
+	PromptPath     string   `json:"prompt_path"`
 }
 
 // DeployPresetReq 部署 Preset 请求
@@ -99,6 +102,10 @@ type DeployPresetReq struct {
 	// 当路径组/手动填写有多条 config 路径时，前端弹窗让每个 config 选定目标后回传。
 	// 单条 config 路径时可为空（后端自动归一到那一条）。
 	ConfigAssignments map[string]string `json:"config_assignments"`
+	// MdConfigAssignments mdconfig 资源 ID → 目标目录的分配映射。
+	// 当路径组/手动填写有多条 mdconfig 路径时，前端弹窗让每个 mdconfig 选定目标后回传。
+	// 单条 mdconfig 路径时可为空（后端自动归一到那一条）。
+	MdConfigAssignments map[string]string `json:"mdconfig_assignments"`
 }
 
 // CreatePrivateResourceReq 创建 Preset 私有资源请求

@@ -318,11 +318,11 @@ func (r *PresetRepo) GetPathGroupByIDByID(id string) (*model.PathGroup, error) {
 	r.db.RLock()
 	defer r.db.RUnlock()
 	g := &model.PathGroup{}
-	var configPaths string
+	var configPaths, mdconfigPaths string
 	err := r.db.Conn.QueryRow(
-		`SELECT id, name, skill_path, agent_path, config_path, config_paths, prompt_path, created_at, updated_at
+		`SELECT id, name, skill_path, mdconfig_path, mdconfig_paths, config_path, config_paths, prompt_path, created_at, updated_at
 		 FROM path_group WHERE id = ?`, id,
-	).Scan(&g.ID, &g.Name, &g.SkillPath, &g.AgentPath, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt)
+	).Scan(&g.ID, &g.Name, &g.SkillPath, &g.MdConfigPath, &mdconfigPaths, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -330,5 +330,6 @@ func (r *PresetRepo) GetPathGroupByIDByID(id string) (*model.PathGroup, error) {
 		return nil, fmt.Errorf("查询路径组失败: %w", err)
 	}
 	hydrateConfigPaths(g, configPaths)
+	hydrateMdConfigPaths(g, mdconfigPaths)
 	return g, nil
 }

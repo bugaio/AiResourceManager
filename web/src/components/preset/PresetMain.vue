@@ -30,7 +30,7 @@ const editingResource = ref<PresetResource | null>(null)
 
 const TYPE_COLUMNS: { type: ResourceType; label: string }[] = [
   { type: 'skill', label: 'Skill' },
-  { type: 'agent', label: 'SubAgent' },
+  { type: 'mdconfig', label: 'MdConfig' },
   { type: 'config', label: 'Config' },
   { type: 'prompt', label: 'Prompt' },
 ]
@@ -39,7 +39,7 @@ const TYPE_COLUMNS: { type: ResourceType; label: string }[] = [
 const groupedResources = computed(() => {
   const map: Record<ResourceType, PresetResource[]> = {
     skill: [],
-    agent: [],
+    mdconfig: [],
     config: [],
     prompt: [],
   }

@@ -31,12 +31,12 @@ const dialogVisible = computed({
 
 const TABS: { label: string; value: ResourceType }[] = [
   { label: 'Skill', value: 'skill' },
-  { label: 'SubAgent', value: 'agent' },
+  { label: 'MdConfig', value: 'mdconfig' },
   { label: 'Config', value: 'config' },
   { label: 'Prompt', value: 'prompt' },
 ]
 
-const ALL_TYPES: ResourceType[] = ['skill', 'agent', 'config', 'prompt']
+const ALL_TYPES: ResourceType[] = ['skill', 'mdconfig', 'config', 'prompt']
 
 /** 本次面板中新建的私有资源（临时记录，尚未落库；确定时才真正创建） */
 interface DraftPrivate {
@@ -49,16 +49,16 @@ interface DraftPrivate {
 const currentType = ref<ResourceType>('skill')
 /** 每个模块各自独立的搜索框内容（强制隔离，切换 tab 不共享、不清空） */
 const searchInputs = ref<Record<ResourceType, string>>({
-  skill: '', agent: '', config: '', prompt: '',
+  skill: '', mdconfig: '', config: '', prompt: '',
 })
 /** 按类型缓存的全局资源列表（切换 tab 不清空，右侧可汇总） */
 const globalLists = ref<Record<ResourceType, Resource[]>>({
-  skill: [], agent: [], config: [], prompt: [],
+  skill: [], mdconfig: [], config: [], prompt: [],
 })
 const loading = ref(false)
 /** 按类型已勾选的全局资源 ID */
 const checkedGlobalIds = ref<Record<ResourceType, Set<string>>>({
-  skill: new Set(), agent: new Set(), config: new Set(), prompt: new Set(),
+  skill: new Set(), mdconfig: new Set(), config: new Set(), prompt: new Set(),
 })
 /** preset 已有资源 ID（不可重复选择） */
 const existingResourceIds = ref<Set<string>>(new Set())
@@ -123,7 +123,7 @@ watch(
   (val) => {
     if (val) {
       currentType.value = 'skill'
-      searchInputs.value = { skill: '', agent: '', config: '', prompt: '' }
+      searchInputs.value = { skill: '', mdconfig: '', config: '', prompt: '' }
       for (const t of ALL_TYPES) {
         globalLists.value[t] = []
         checkedGlobalIds.value[t] = new Set()

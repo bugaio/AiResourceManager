@@ -23,8 +23,9 @@ export function getTargets(type?: string): Promise<TargetInfo[]> {
 }
 
 /** 健康检查（返回broken项） */
-export function checkHealth(): Promise<DeploymentItem[]> {
-  return request.get('/deployments/health')
+export function checkHealth(targetPaths?: string[]): Promise<DeploymentItem[]> {
+  const params = targetPaths?.length ? { target_paths: targetPaths.join(',') } : undefined
+  return request.get('/deployments/health', { params })
 }
 
 /** 修复部署项 */

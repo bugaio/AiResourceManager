@@ -152,8 +152,8 @@ func (s *DeployService) Deploy(req *model.DeployRequest) (*model.Deployment, err
 		case "skill":
 			linkPath, err = s.deploySkill(&res, targetPath, req.Force)
 			deployType = "symlink"
-		case "agent":
-			linkPath, err = s.deployAgent(&res, targetPath, req.Force)
+		case "mdconfig":
+			linkPath, err = s.deployMdConfig(&res, targetPath, req.Force)
 			deployType = "symlink"
 		case "config":
 			linkPath, err = s.deployConfig(&res, targetPath, req.Force)
@@ -447,9 +447,9 @@ func latestDeployTime(ti model.TargetInfo) string {
 }
 
 // CheckHealth 执行健康检查，返回异常部署子项
-// 返回: broken 状态的明细列表、错误信息
-func (s *DeployService) CheckHealth() ([]model.DeploymentItem, error) {
-	allItems, err := s.deployRepo.GetAllDeploymentItems()
+// targetPaths 非空时只检查指定目标路径下的明细，为空时全量检查
+func (s *DeployService) CheckHealth(targetPaths []string) ([]model.DeploymentItem, error) {
+	allItems, err := s.deployRepo.GetDeploymentItemsByTargetPaths(targetPaths)
 	if err != nil {
 		return nil, model.NewBizError(model.ErrSystemDB, err.Error())
 	}
@@ -508,8 +508,8 @@ func (s *DeployService) RepairItem(deploymentID, itemID string) error {
 	switch resource.Type {
 	case "skill":
 		_, err = s.deploySkill(resource, deployment.TargetPath, true)
-	case "agent":
-		_, err = s.deployAgent(resource, deployment.TargetPath, true)
+	case "mdconfig":
+		_, err = s.deployMdConfig(resource, deployment.TargetPath, true)
 	case "config":
 		_, err = s.deployConfig(resource, deployment.TargetPath, true)
 	case "prompt":
@@ -652,8 +652,8 @@ func (s *DeployService) DeploySingleResourceToTarget(deploymentID string, resour
 	switch resource.Type {
 	case "skill":
 		linkPath, err = s.deploySkill(resource, targetPath, true)
-	case "agent":
-		linkPath, err = s.deployAgent(resource, targetPath, true)
+	case "mdconfig":
+		linkPath, err = s.deployMdConfig(resource, targetPath, true)
 	case "config":
 		linkPath, err = s.deployConfig(resource, targetPath, true)
 	case "prompt":
@@ -824,8 +824,8 @@ func (s *DeployService) deploySkill(resource *model.Resource, targetPath string,
 	return linkDst, nil
 }
 
-// deployAgent 部署 agent 类型资源（创建符号链接到目标目录）
-func (s *DeployService) deployAgent(resource *model.Resource, targetPath string, force bool) (string, error) {
+// deployMdConfig 部署 mdconfig 类型资源（创建符号链接到目标目录）
+func (s *DeployService) deployMdConfig(resource *model.Resource, targetPath string, force bool) (string, error) {
 	if err := util.EnsureDir(targetPath); err != nil {
 		return "", model.NewBizError(model.ErrDeployFailed, fmt.Sprintf("创建目标目录失败: %v", err))
 	}
@@ -2225,9 +2225,13 @@ func (s *DeployService) pathGroupNameForTarget(targetPath string) string {
 		return ""
 	}
 	for _, g := range groups {
-		if g.SkillPath == targetPath || g.AgentPath == targetPath ||
-			g.PromptPath == targetPath {
+		if g.SkillPath == targetPath || g.PromptPath == targetPath {
 			return g.Name
+		}
+		for _, mp := range g.MdConfigPaths {
+			if mp == targetPath {
+				return g.Name
+			}
 		}
 		for _, cp := range g.ConfigPaths {
 			if cp == targetPath {
@@ -2384,7 +2388,7 @@ func (s *DeployService) resolvePromptTargets(req *model.CheckConflictsReq) ([]st
 // === Preset 部署相关 ===
 
 // presetTypeOrder Preset 内资源类型固定按此顺序部署（symlink 类在前，merge 类在后）
-var presetTypeOrder = []string{"skill", "agent", "config", "prompt"}
+var presetTypeOrder = []string{"skill", "mdconfig", "config", "prompt"}
 
 // typeToPathSpec 取某类型对应的子路径
 func typeToPathSpec(t string, spec *model.PathSpec) string {
@@ -2394,8 +2398,12 @@ func typeToPathSpec(t string, spec *model.PathSpec) string {
 	switch t {
 	case "skill":
 		return spec.SkillPath
-	case "agent":
-		return spec.AgentPath
+	case "mdconfig":
+		// mdconfig 已改为多路径，此处返回第一条仅作兜底（正常不应走到）
+		if len(spec.MdConfigPaths) > 0 {
+			return spec.MdConfigPaths[0]
+		}
+		return spec.MdConfigPath
 	case "config":
 		// config 已改为多路径，此处返回第一条仅作兜底（正常不应走到）
 		if len(spec.ConfigPaths) > 0 {
@@ -2451,6 +2459,79 @@ func (s *DeployService) resolveConfigAssignments(configs []model.Resource, confi
 			fmt.Sprintf("以下 config 未分配目标路径: %s", strings.Join(unassigned, "、")))
 	}
 	return result, nil
+}
+
+// resolveMdConfigAssignments 计算每个 mdconfig 资源应部署到的目标目录。
+// 规则与 resolveConfigAssignments 完全一致（0条→空，1条→自动归一，多条→必须逐个分配）。
+func (s *DeployService) resolveMdConfigAssignments(mdconfigs []model.Resource, mdconfigPaths []string, assignments map[string]string) (map[string]string, error) {
+	result := map[string]string{}
+	if len(mdconfigs) == 0 {
+		return result, nil
+	}
+	if len(mdconfigPaths) == 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid, "preset 含 mdconfig 资源,但目标无 mdconfig 路径")
+	}
+	if len(mdconfigPaths) == 1 {
+		for _, r := range mdconfigs {
+			result[r.ID] = mdconfigPaths[0]
+		}
+		return result, nil
+	}
+	// 多路径：必须逐个分配且合法
+	valid := map[string]bool{}
+	for _, p := range mdconfigPaths {
+		valid[p] = true
+	}
+	var unassigned []string
+	for _, r := range mdconfigs {
+		target, ok := assignments[r.ID]
+		if !ok || target == "" {
+			unassigned = append(unassigned, r.Name)
+			continue
+		}
+		if !valid[target] {
+			return nil, model.NewBizError(model.ErrDeployInvalid,
+				fmt.Sprintf("mdconfig「%s」分配的路径不在该路径组的 mdconfig 路径列表中", r.Name))
+		}
+		result[r.ID] = target
+	}
+	if len(unassigned) > 0 {
+		return nil, model.NewBizError(model.ErrDeployInvalid,
+			fmt.Sprintf("以下 mdconfig 未分配目标路径: %s", strings.Join(unassigned, "、")))
+	}
+	return result, nil
+}
+
+// deployMdConfigByAssignment 把 mdconfig 资源按分配的目标目录分组，每个目标一条 deployment
+func (s *DeployService) deployMdConfigByAssignment(mdconfigs []model.Resource, assign map[string]string, track bool, presetID *string) ([]model.Deployment, error) {
+	// 按目标路径分组，保持稳定顺序
+	groups := map[string][]string{}
+	var order []string
+	for _, r := range mdconfigs {
+		target := assign[r.ID]
+		if target == "" {
+			continue
+		}
+		if _, ok := groups[target]; !ok {
+			order = append(order, target)
+		}
+		groups[target] = append(groups[target], r.ID)
+	}
+	var created []model.Deployment
+	for _, target := range order {
+		dep, err := s.Deploy(&model.DeployRequest{
+			ResourceIDs: groups[target],
+			TargetPath:  target,
+			Force:       true,
+			Track:       track,
+			PresetID:    presetID,
+		})
+		if err != nil {
+			return created, err
+		}
+		created = append(created, *dep)
+	}
+	return created, nil
 }
 
 // deployConfigByAssignment 把 config 资源按分配的目标路径分组，每个目标一条 deployment
@@ -2547,13 +2628,18 @@ func (s *DeployService) DeployPreset(req *model.DeployPresetReq, presetID string
 			return nil, model.NewBizError(model.ErrPathGroupNotFound, "路径组不存在")
 		}
 		spec = model.PathSpec{
-			SkillPath:   pg.SkillPath,
-			AgentPath:   pg.AgentPath,
-			ConfigPaths: pg.ConfigPaths,
-			PromptPath:  pg.PromptPath,
+			SkillPath:     pg.SkillPath,
+			MdConfigPath:  pg.MdConfigPath,
+			MdConfigPaths: pg.MdConfigPaths,
+			ConfigPaths:   pg.ConfigPaths,
+			PromptPath:    pg.PromptPath,
 		}
 	} else if req.ManualPaths != nil {
 		spec = *req.ManualPaths
+		// 手动模式 mdconfig 多路径归一：MdConfigPaths 优先，否则回退单值 MdConfigPath
+		if len(spec.MdConfigPaths) == 0 && spec.MdConfigPath != "" {
+			spec.MdConfigPaths = []string{spec.MdConfigPath}
+		}
 		// 手动模式 config 多路径归一：ConfigPaths 优先，否则回退单值 ConfigPath
 		if len(spec.ConfigPaths) == 0 && spec.ConfigPath != "" {
 			spec.ConfigPaths = []string{spec.ConfigPath}
@@ -2566,6 +2652,12 @@ func (s *DeployService) DeployPreset(req *model.DeployPresetReq, presetID string
 	var missing []string
 	for _, t := range presetTypeOrder {
 		if _, ok := byType[t]; !ok {
+			continue
+		}
+		if t == "mdconfig" {
+			if len(spec.MdConfigPaths) == 0 {
+				missing = append(missing, t)
+			}
 			continue
 		}
 		if t == "config" {
@@ -2583,7 +2675,15 @@ func (s *DeployService) DeployPreset(req *model.DeployPresetReq, presetID string
 			fmt.Sprintf("缺少类型对应的子路径: %s", strings.Join(missing, ",")))
 	}
 
-	// 3.5 解析 config 资源 → 目标路径的分配
+	// 3.5 解析 mdconfig 资源 → 目标路径的分配
+	//   - 单条 mdconfig 路径：全部 mdconfig 归到那一条（无需前端分配）
+	//   - 多条 mdconfig 路径：必须每个 mdconfig 在 MdConfigAssignments 指定且目标合法
+	mdconfigAssign, mErr := s.resolveMdConfigAssignments(byType["mdconfig"], spec.MdConfigPaths, req.MdConfigAssignments)
+	if mErr != nil {
+		return nil, mErr
+	}
+
+	// 3.6 解析 config 资源 → 目标路径的分配
 	//   - 单条 config 路径：全部 config 归到那一条（无需前端分配）
 	//   - 多条 config 路径：必须每个 config 在 ConfigAssignments 指定且目标合法
 	configAssign, aErr := s.resolveConfigAssignments(byType["config"], spec.ConfigPaths, req.ConfigAssignments)
@@ -2596,6 +2696,15 @@ func (s *DeployService) DeployPreset(req *model.DeployPresetReq, presetID string
 	for _, t := range presetTypeOrder {
 		resources, ok := byType[t]
 		if !ok || len(resources) == 0 {
+			continue
+		}
+		if t == "mdconfig" {
+			// mdconfig 按目标路径分组，每组一条 deployment
+			deps, mErr := s.deployMdConfigByAssignment(resources, mdconfigAssign, req.Track, presetIDPtr)
+			if mErr != nil {
+				return created, mErr
+			}
+			created = append(created, deps...)
 			continue
 		}
 		if t == "config" {
@@ -2735,9 +2844,13 @@ func (s *DeployService) ListPresetDeployments(presetID string) ([]model.Deployme
 func (s *DeployService) groupOfTarget(groups []model.PathGroup, targetPath string) *model.PathGroup {
 	for i := range groups {
 		g := &groups[i]
-		if g.SkillPath == targetPath || g.AgentPath == targetPath ||
-			g.PromptPath == targetPath {
+		if g.SkillPath == targetPath || g.PromptPath == targetPath {
 			return g
+		}
+		for _, mp := range g.MdConfigPaths {
+			if mp == targetPath {
+				return g
+			}
 		}
 		for _, cp := range g.ConfigPaths {
 			if cp == targetPath {
@@ -2754,8 +2867,8 @@ func typesWithSubPath(g *model.PathGroup) map[string]bool {
 	if g.SkillPath != "" {
 		set["skill"] = true
 	}
-	if g.AgentPath != "" {
-		set["agent"] = true
+	if len(g.MdConfigPaths) > 0 {
+		set["mdconfig"] = true
 	}
 	if len(g.ConfigPaths) > 0 {
 		set["config"] = true
@@ -2823,10 +2936,6 @@ func (s *DeployService) ListPresetGroupDrifts(presetID string) (map[string]model
 		subTypes := typesWithSubPath(g)
 		pending, stale := 0, 0
 		var missingTypes []string
-		// 遍历 preset 实际拥有资源的每种类型：
-		//   - 路径组配了该类型子路径 → 正常比对 pending/stale
-		//   - 路径组【未配】该类型子路径 → 该类型资源无处部署，记为 missing，
-		//     并把这些资源计入 pending（驱动侧栏标红：「未配置」需先补路径）
 		for _, rtype := range presetTypeOrder {
 			expected := map[string]bool{}
 			for _, r := range byType[rtype] {
@@ -2899,9 +3008,10 @@ func (s *DeployService) GetPresetGroupStatus(presetID, groupID string) (*model.P
 	}
 
 	// 该路径组下、每种类型对应的 deployment（若已部署）。
-	// config 可有多条路径，按 target_path 索引；其余类型按类型索引（单路径）。
+	// config/mdconfig 可有多条路径，按 target_path 索引；其余类型按类型索引（单路径）。
 	depBySingleType := map[string]*model.Deployment{}
 	depByConfigPath := map[string]*model.Deployment{}
+	depByMdConfigPath := map[string]*model.Deployment{}
 	for i := range deployments {
 		dep := &deployments[i]
 		tg := s.groupOfTarget(groups, dep.TargetPath)
@@ -2911,12 +3021,22 @@ func (s *DeployService) GetPresetGroupStatus(presetID, groupID string) (*model.P
 		switch dep.TargetPath {
 		case g.SkillPath:
 			depBySingleType["skill"] = dep
-		case g.AgentPath:
-			depBySingleType["agent"] = dep
 		case g.PromptPath:
 			depBySingleType["prompt"] = dep
 		default:
-			// 命中该组的某条 config 路径
+			// 检查是否命中 mdconfig 路径
+			isMdConfig := false
+			for _, mp := range g.MdConfigPaths {
+				if mp == dep.TargetPath {
+					depByMdConfigPath[mp] = dep
+					isMdConfig = true
+					break
+				}
+			}
+			if isMdConfig {
+				break
+			}
+			// 检查是否命中 config 路径
 			for _, cp := range g.ConfigPaths {
 				if cp == dep.TargetPath {
 					depByConfigPath[cp] = dep
@@ -2978,14 +3098,82 @@ func (s *DeployService) GetPresetGroupStatus(presetID, groupID string) (*model.P
 		return ts
 	}
 
-	for _, rtype := range []string{"skill", "agent", "prompt"} {
+	for _, rtype := range []string{"skill", "prompt"} {
 		if !subTypes[rtype] {
 			continue
 		}
 		tp := typeToPathSpec(rtype, &model.PathSpec{
-			SkillPath: g.SkillPath, AgentPath: g.AgentPath, PromptPath: g.PromptPath,
+			SkillPath: g.SkillPath, PromptPath: g.PromptPath,
 		})
 		status.Targets = append(status.Targets, buildSingleTargetStatus(rtype, tp, depBySingleType[rtype]))
+	}
+
+	// mdconfig 多路径：每条路径一行；另把 preset 中尚未部署到本组任一路径的 mdconfig 归入"未分配"行
+	if subTypes["mdconfig"] {
+		assignedMdConfigIDs := map[string]bool{}
+		for _, mp := range g.MdConfigPaths {
+			dep := depByMdConfigPath[mp]
+			ts := model.PresetTargetStatus{Type: "mdconfig", TargetPath: mp}
+			deployedSet := map[string]bool{}
+			if dep != nil {
+				ts.DeploymentID = dep.ID
+				ts.Track = dep.Track
+				ts.DeployType = dep.DeployType
+				ts.HasDeployment = true
+				items, _ := s.deployRepo.GetDeploymentItems(dep.ID)
+				for _, it := range items {
+					deployedSet[it.ResourceID] = true
+				}
+			}
+			presetMdConfigIDs := map[string]bool{}
+			for _, r := range byType["mdconfig"] {
+				presetMdConfigIDs[r.ID] = true
+			}
+			// 已部署在该路径、且仍属 preset 的 mdconfig
+			for _, r := range byType["mdconfig"] {
+				if !deployedSet[r.ID] {
+					continue
+				}
+				assignedMdConfigIDs[r.ID] = true
+				ts.Resources = append(ts.Resources, model.DeployResourceStatus{
+					ResourceID: r.ID, ResourceName: r.Name, Type: "mdconfig", Deployed: true, CurrentPath: mp,
+				})
+			}
+			// 残留：部署在该路径但已不在 preset
+			for rid := range deployedSet {
+				if presetMdConfigIDs[rid] {
+					continue
+				}
+				name := rid
+				if r, rErr := s.resourceRepo.GetResourceByID(rid); rErr == nil && r != nil {
+					name = r.Name
+				}
+				ts.Resources = append(ts.Resources, model.DeployResourceStatus{
+					ResourceID: rid, ResourceName: name, Type: "mdconfig", Deployed: true, Stale: true, CurrentPath: mp,
+				})
+				status.Stale++
+			}
+			if ts.Resources == nil {
+				ts.Resources = []model.DeployResourceStatus{}
+			}
+			status.Targets = append(status.Targets, ts)
+		}
+		// 未分配：preset 有但尚未部署到本组任一 mdconfig 路径
+		var unassigned []model.DeployResourceStatus
+		for _, r := range byType["mdconfig"] {
+			if assignedMdConfigIDs[r.ID] {
+				continue
+			}
+			unassigned = append(unassigned, model.DeployResourceStatus{
+				ResourceID: r.ID, ResourceName: r.Name, Type: "mdconfig", Deployed: false,
+			})
+			status.Pending++
+		}
+		if len(unassigned) > 0 {
+			status.Targets = append(status.Targets, model.PresetTargetStatus{
+				Type: "mdconfig", TargetPath: "", Resources: unassigned,
+			})
+		}
 	}
 
 	// config 多路径：每条路径一行；另把 preset 中尚未部署到本组任一路径的 config 归入"未分配"行
@@ -3068,7 +3256,7 @@ func (s *DeployService) GetPresetGroupStatus(presetID, groupID string) (*model.P
 //
 // configAssignments: config 资源 ID → 目标路径的分配（前端弹窗回传）。
 // 撤销前先快照每个 config 当前所在路径作为默认值，assignments 覆盖之（支持重新分配 / 新增补选）。
-func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssignments map[string]string) ([]model.Deployment, error) {
+func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssignments map[string]string, mdconfigAssignments map[string]string) ([]model.Deployment, error) {
 	presetIDPtr := &presetID
 	groups, err := s.pathGroupRepo.ListPathGroups()
 	if err != nil {
@@ -3094,12 +3282,28 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 		return nil, err
 	}
 
-	// 撤销前：快照每个 config 资源当前部署到本组的哪条路径（作为重部署默认分配）
+	// 撤销前：快照每个 mdconfig 资源当前部署到本组的哪条路径（作为重部署默认分配）
+	mdconfigCurrentPath := map[string]string{}
+	// 快照每个 config 资源当前部署到本组的哪条路径（作为重部署默认分配）
 	configCurrentPath := map[string]string{}
 	for i := range deployments {
 		dep := &deployments[i]
 		tg := s.groupOfTarget(groups, dep.TargetPath)
 		if tg == nil || tg.ID != groupID {
+			continue
+		}
+		isMdConfigPath := false
+		for _, mp := range g.MdConfigPaths {
+			if mp == dep.TargetPath {
+				isMdConfigPath = true
+				break
+			}
+		}
+		if isMdConfigPath {
+			items, _ := s.deployRepo.GetDeploymentItems(dep.ID)
+			for _, it := range items {
+				mdconfigCurrentPath[it.ResourceID] = dep.TargetPath
+			}
 			continue
 		}
 		isConfigPath := false
@@ -3118,6 +3322,11 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 		}
 	}
 	// 应用前端覆盖（重新分配 / 新增补选）
+	for rid, target := range mdconfigAssignments {
+		if target != "" {
+			mdconfigCurrentPath[rid] = target
+		}
+	}
 	for rid, target := range configAssignments {
 		if target != "" {
 			configCurrentPath[rid] = target
@@ -3127,6 +3336,7 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 	// 记录原 track（按类型），并撤销该组下所有旧部署
 	trackByType := map[string]bool{}
 	configTrack := false
+	mdconfigTrack := false
 	for i := range deployments {
 		dep := &deployments[i]
 		tg := s.groupOfTarget(groups, dep.TargetPath)
@@ -3136,12 +3346,16 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 		switch dep.TargetPath {
 		case g.SkillPath:
 			trackByType["skill"] = dep.Track == 1
-		case g.AgentPath:
-			trackByType["agent"] = dep.Track == 1
 		case g.PromptPath:
 			trackByType["prompt"] = dep.Track == 1
 		default:
-			// 任一 config 路径的 track（多条取其一即可，行为一致）
+			// 任一 mdconfig 路径的 track
+			for _, mp := range g.MdConfigPaths {
+				if mp == dep.TargetPath {
+					mdconfigTrack = dep.Track == 1
+				}
+			}
+			// 任一 config 路径的 track
 			for _, cp := range g.ConfigPaths {
 				if cp == dep.TargetPath {
 					configTrack = dep.Track == 1
@@ -3152,7 +3366,7 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 	}
 
 	spec := model.PathSpec{
-		SkillPath: g.SkillPath, AgentPath: g.AgentPath, PromptPath: g.PromptPath,
+		SkillPath: g.SkillPath, PromptPath: g.PromptPath,
 	}
 	subTypes := typesWithSubPath(g)
 	var created []model.Deployment
@@ -3162,6 +3376,15 @@ func (s *DeployService) RedeployPresetGroup(presetID, groupID string, configAssi
 		}
 		resources := byType[t]
 		if len(resources) == 0 {
+			continue
+		}
+		if t == "mdconfig" {
+			// mdconfig 按（默认快照 + 前端覆盖）的分配重新部署，每路径一条
+			deps, mErr := s.deployMdConfigByAssignment(resources, mdconfigCurrentPath, mdconfigTrack, presetIDPtr)
+			if mErr != nil {
+				continue
+			}
+			created = append(created, deps...)
 			continue
 		}
 		if t == "config" {
@@ -3264,7 +3487,7 @@ func (s *DeployService) SyncPresetDeployments(presetID string) {
 // skill/agent -> 目标是目录(无后缀)；config -> 配置文件后缀；prompt -> .md
 func (s *DeployService) resourceTypeMatchesTarget(rtype, target string) bool {
 	switch rtype {
-	case "skill", "agent":
+	case "skill", "mdconfig":
 		return filepath.Ext(target) == ""
 	case "config":
 		return util.IsConfigFile(target)

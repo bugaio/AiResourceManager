@@ -35,7 +35,7 @@ func RegisterPresetRoutes(group *gin.RouterGroup, h *PresetHandler) {
 		r.POST("/:id/private-resources", h.handleCreatePrivateResource)
 		r.DELETE("/:id/private-resources/:rid", h.handleDeletePrivateResource)
 		r.POST("/:id/import-private-skill", h.handleImportPrivateSkill)
-		r.POST("/:id/import-private-agent", h.handleImportPrivateAgent)
+		r.POST("/:id/import-private-mdconfig", h.handleImportPrivateMdConfig)
 		r.POST("/:id/deploy", h.handleDeploy)
 		r.POST("/:id/redeploy", h.handleRedeploy)
 		r.DELETE("/:id/deploy/:deploymentID", h.handleUndeploy)
@@ -254,8 +254,8 @@ func (h *PresetHandler) handleImportPrivateSkill(c *gin.Context) {
 	Success(c, r)
 }
 
-// handleImportPrivateAgent 导入私有 agent (multipart)
-func (h *PresetHandler) handleImportPrivateAgent(c *gin.Context) {
+// handleImportPrivateMdConfig 导入私有 mdconfig (multipart)
+func (h *PresetHandler) handleImportPrivateMdConfig(c *gin.Context) {
 	id := c.Param("id")
 	name := c.PostForm("name")
 	description := c.PostForm("description")
@@ -277,7 +277,7 @@ func (h *PresetHandler) handleImportPrivateAgent(c *gin.Context) {
 		return
 	}
 
-	r, err := h.svc.ImportPrivateAgent(id, name, description, data)
+	r, err := h.svc.ImportPrivateMdConfig(id, name, description, data)
 	if err != nil {
 		handleBizError(c, err)
 		return
@@ -339,12 +339,13 @@ func (h *PresetHandler) handleGroupStatus(c *gin.Context) {
 func (h *PresetHandler) handleRedeployGroup(c *gin.Context) {
 	id := c.Param("id")
 	groupID := c.Param("groupID")
-	// config 多路径场景：前端弹窗回传 config 资源 → 目标路径的分配（可为空）
+	// 多路径场景：前端弹窗回传 config/mdconfig 资源 → 目标路径的分配（可为空）
 	var req struct {
-		ConfigAssignments map[string]string `json:"config_assignments"`
+		ConfigAssignments   map[string]string `json:"config_assignments"`
+		MdConfigAssignments map[string]string `json:"mdconfig_assignments"`
 	}
 	_ = c.ShouldBindJSON(&req) // body 可空，忽略解析错误
-	deployments, err := h.svc.RedeployPresetGroup(id, groupID, req.ConfigAssignments)
+	deployments, err := h.svc.RedeployPresetGroup(id, groupID, req.ConfigAssignments, req.MdConfigAssignments)
 	if err != nil {
 		handleBizError(c, err)
 		return

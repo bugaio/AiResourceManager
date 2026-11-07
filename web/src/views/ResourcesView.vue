@@ -10,7 +10,7 @@ import wsManager from '@/api/ws'
 
 /** 资源管理主视图 — 协调器
  *
- * 每个资源类型(skill/agent/config/prompt)由一个独立的 ResourcePanel 承载,
+ * 每个资源类型(skill/mdconfig/config/prompt)由一个独立的 ResourcePanel 承载,
  * 用 <keep-alive> 缓存。切换类型即切换组件实例,各面板的搜索框/分组/分页
  * 状态原地保留,互不干扰,切换时不会触发其他模块的筛选闪动。
  *

@@ -54,6 +54,27 @@ func hydrateConfigPaths(g *model.PathGroup, raw string) {
 	}
 }
 
+// hydrateMdConfigPaths 反序列化 mdconfig_paths 字段并回填 MdConfigPath 镜像（= 第一条）
+// 兼容历史数据：若 mdconfig_paths 为空但旧 mdconfig_path 非空，用旧值组成单元素数组
+func hydrateMdConfigPaths(g *model.PathGroup, raw string) {
+	var paths []string
+	if raw != "" && raw != "[]" {
+		_ = json.Unmarshal([]byte(raw), &paths)
+	}
+	if len(paths) == 0 && g.MdConfigPath != "" {
+		paths = []string{g.MdConfigPath}
+	}
+	if paths == nil {
+		paths = []string{}
+	}
+	g.MdConfigPaths = paths
+	if len(paths) > 0 {
+		g.MdConfigPath = paths[0]
+	} else {
+		g.MdConfigPath = ""
+	}
+}
+
 // InsertPathGroup 插入路径组
 func (r *PathGroupRepo) InsertPathGroup(g *model.PathGroup) error {
 	r.db.Lock()
@@ -64,10 +85,19 @@ func (r *PathGroupRepo) InsertPathGroup(g *model.PathGroup) error {
 	} else {
 		g.ConfigPath = ""
 	}
+	// MdConfigPath 镜像 = MdConfigPaths[0]
+	if len(g.MdConfigPaths) > 0 {
+		g.MdConfigPath = g.MdConfigPaths[0]
+	} else {
+		// 兼容：若只传了单值，组成数组
+		if g.MdConfigPath != "" {
+			g.MdConfigPaths = []string{g.MdConfigPath}
+		}
+	}
 	_, err := r.db.Conn.Exec(
-		`INSERT INTO path_group (id, name, skill_path, agent_path, config_path, config_paths, prompt_path, created_at, updated_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		g.ID, g.Name, g.SkillPath, g.AgentPath, g.ConfigPath, marshalConfigPaths(g.ConfigPaths), g.PromptPath, g.CreatedAt, g.UpdatedAt,
+		`INSERT INTO path_group (id, name, skill_path, mdconfig_path, mdconfig_paths, config_path, config_paths, prompt_path, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		g.ID, g.Name, g.SkillPath, g.MdConfigPath, marshalConfigPaths(g.MdConfigPaths), g.ConfigPath, marshalConfigPaths(g.ConfigPaths), g.PromptPath, g.CreatedAt, g.UpdatedAt,
 	)
 	if err != nil {
 		return fmt.Errorf("插入路径组失败: %w", err)
@@ -80,11 +110,11 @@ func (r *PathGroupRepo) GetPathGroupByID(id string) (*model.PathGroup, error) {
 	r.db.RLock()
 	defer r.db.RUnlock()
 	g := &model.PathGroup{}
-	var configPaths string
+	var configPaths, mdconfigPaths string
 	err := r.db.Conn.QueryRow(
-		`SELECT id, name, skill_path, agent_path, config_path, config_paths, prompt_path, created_at, updated_at
+		`SELECT id, name, skill_path, mdconfig_path, mdconfig_paths, config_path, config_paths, prompt_path, created_at, updated_at
 		 FROM path_group WHERE id = ?`, id,
-	).Scan(&g.ID, &g.Name, &g.SkillPath, &g.AgentPath, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt)
+	).Scan(&g.ID, &g.Name, &g.SkillPath, &g.MdConfigPath, &mdconfigPaths, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -92,6 +122,7 @@ func (r *PathGroupRepo) GetPathGroupByID(id string) (*model.PathGroup, error) {
 		return nil, fmt.Errorf("查询路径组失败: %w", err)
 	}
 	hydrateConfigPaths(g, configPaths)
+	hydrateMdConfigPaths(g, mdconfigPaths)
 	return g, nil
 }
 
@@ -100,7 +131,7 @@ func (r *PathGroupRepo) ListPathGroups() ([]model.PathGroup, error) {
 	r.db.RLock()
 	defer r.db.RUnlock()
 	rows, err := r.db.Conn.Query(
-		`SELECT id, name, skill_path, agent_path, config_path, config_paths, prompt_path, created_at, updated_at
+		`SELECT id, name, skill_path, mdconfig_path, mdconfig_paths, config_path, config_paths, prompt_path, created_at, updated_at
 		 FROM path_group ORDER BY created_at DESC`,
 	)
 	if err != nil {
@@ -110,11 +141,12 @@ func (r *PathGroupRepo) ListPathGroups() ([]model.PathGroup, error) {
 	var list []model.PathGroup
 	for rows.Next() {
 		var g model.PathGroup
-		var configPaths string
-		if err := rows.Scan(&g.ID, &g.Name, &g.SkillPath, &g.AgentPath, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt); err != nil {
+		var configPaths, mdconfigPaths string
+		if err := rows.Scan(&g.ID, &g.Name, &g.SkillPath, &g.MdConfigPath, &mdconfigPaths, &g.ConfigPath, &configPaths, &g.PromptPath, &g.CreatedAt, &g.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("扫描路径组行失败: %w", err)
 		}
 		hydrateConfigPaths(&g, configPaths)
+		hydrateMdConfigPaths(&g, mdconfigPaths)
 		list = append(list, g)
 	}
 	if list == nil {
@@ -154,9 +186,27 @@ func (r *PathGroupRepo) UpdatePathGroup(id string, req *model.UpdatePathGroupReq
 		sets = append(sets, "skill_path = ?")
 		args = append(args, *req.SkillPath)
 	}
-	if req.AgentPath != nil {
-		sets = append(sets, "agent_path = ?")
-		args = append(args, *req.AgentPath)
+	if req.MdConfigPaths != nil {
+		// 多条 mdconfig 路径整体替换；同步 mdconfig_path 镜像 = 第一条
+		paths := *req.MdConfigPaths
+		sets = append(sets, "mdconfig_paths = ?")
+		args = append(args, marshalConfigPaths(paths))
+		mirror := ""
+		if len(paths) > 0 {
+			mirror = paths[0]
+		}
+		sets = append(sets, "mdconfig_path = ?")
+		args = append(args, mirror)
+	} else if req.MdConfigPath != nil {
+		// 仅传单值（旧客户端）：同时更新镜像与数组
+		sets = append(sets, "mdconfig_path = ?")
+		args = append(args, *req.MdConfigPath)
+		paths := []string{}
+		if *req.MdConfigPath != "" {
+			paths = []string{*req.MdConfigPath}
+		}
+		sets = append(sets, "mdconfig_paths = ?")
+		args = append(args, marshalConfigPaths(paths))
 	}
 	if req.ConfigPaths != nil {
 		// 多条 config 路径整体替换；同步 config_path 镜像 = 第一条

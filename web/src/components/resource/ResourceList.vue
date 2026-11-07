@@ -55,7 +55,7 @@ const isAllGroup = computed(() => resourceStore.currentGroupId === '0')
 const typeLabel: Record<string, string> = {
   skill: 'Skill',
   config: 'Config',
-  agent: 'Agent',
+  mdconfig: 'MdConfig',
   prompt: 'Prompt',
 }
 

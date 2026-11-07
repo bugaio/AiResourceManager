@@ -27,7 +27,7 @@ func ValidatePathByType(resourceType, path string) string {
 		return ""
 	}
 	switch resourceType {
-	case "skill", "agent":
+	case "skill", "mdconfig":
 		if !IsDirectoryPath(path) {
 			return "skill/agent 路径必须是目录（不能带文件后缀）"
 		}

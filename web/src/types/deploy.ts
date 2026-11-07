@@ -15,7 +15,7 @@ export interface Deployment {
 export interface DeployResourceStatus {
   resource_id: string
   resource_name: string
-  type: 'skill' | 'agent' | 'config' | 'prompt' | string
+  type: 'skill' | 'mdconfig' | 'config' | 'prompt' | string
   deployed: boolean
   stale: boolean
   /** 当前实际部署到的目标路径（config 多路径回显/重新分配用），未部署为空 */
@@ -24,7 +24,7 @@ export interface DeployResourceStatus {
 
 /** preset 在某路径组下、单个类型子路径的部署状态 */
 export interface PresetTargetStatus {
-  type: 'skill' | 'agent' | 'config' | 'prompt' | string
+  type: 'skill' | 'mdconfig' | 'config' | 'prompt' | string
   target_path: string
   deployment_id: string
   track: number

@@ -15,13 +15,13 @@ const emit = defineEmits<{
 
 const TYPE_LABEL: Record<string, string> = {
   skill: 'Skill',
-  agent: 'SubAgent',
+  mdconfig: 'MdConfig',
   config: 'Config',
   prompt: 'Prompt',
 }
 
 /** 类型展示顺序 */
-const TYPE_ORDER = ['skill', 'agent', 'config', 'prompt']
+const TYPE_ORDER = ['skill', 'mdconfig', 'config', 'prompt']
 
 /** 按 类型 + 目标路径 + 冲突对象 分组：标题行展示「类型 冲突对象」+「目标路径」，
  *  下方偏移列出本 preset 中与之冲突的资源名 */

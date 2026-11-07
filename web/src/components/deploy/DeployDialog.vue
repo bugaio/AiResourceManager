@@ -213,7 +213,7 @@ async function handleConfirm() {
       await doMergeDeploy(reqs, false)
     }
   } else {
-    // skill/agent 路径
+    // skill/mdconfig 路径
     let hasError = false
     for (const target of selectedTargets.value) {
       const req: DeployRequest = {

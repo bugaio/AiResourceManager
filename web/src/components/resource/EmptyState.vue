@@ -14,7 +14,7 @@ const subtitle = computed(() => {
   const map: Record<string, string> = {
     skill: '还没有创建任何 Skill 资源',
     config: '还没有创建任何 Config 资源',
-    agent: '还没有创建任何 Agent 资源',
+    mdconfig: '还没有创建任何 MdConfig 资源',
     prompt: '还没有创建任何 Prompt 资源',
   }
   return map[uiStore.currentType] || '还没有创建任何资源'

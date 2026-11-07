@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 
 	"github.com/anthropic/airesourcemanager/internal/model"
 	"github.com/anthropic/airesourcemanager/internal/service"
@@ -124,8 +125,17 @@ func (h *DeployHandler) handleTargets(c *gin.Context) {
 }
 
 // handleCheck 处理手动触发健康检查请求
+// 可选 query 参数 target_paths: 逗号分隔的目标路径列表，有值则只检查指定路径，无值则全量检查
 func (h *DeployHandler) handleCheck(c *gin.Context) {
-	brokenItems, err := h.svc.CheckHealth()
+	var targetPaths []string
+	if raw := c.Query("target_paths"); raw != "" {
+		for _, p := range strings.Split(raw, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				targetPaths = append(targetPaths, p)
+			}
+		}
+	}
+	brokenItems, err := h.svc.CheckHealth(targetPaths)
 	if err != nil {
 		handleBizError(c, err)
 		return

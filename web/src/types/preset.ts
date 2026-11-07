@@ -63,7 +63,8 @@ export interface DeployPresetReq {
   /** 手动填写的子路径（与 path_group_id 二选一） */
   manual_paths?: {
     skill_path?: string
-    agent_path?: string
+    mdconfig_path?: string
+    mdconfig_paths?: string[]
     config_path?: string
     config_paths?: string[]
     prompt_path?: string
@@ -74,4 +75,6 @@ export interface DeployPresetReq {
   force?: boolean
   /** config 资源 ID → 目标路径分配（多条 config 路径时由弹窗回传） */
   config_assignments?: Record<string, string>
+  /** mdconfig 资源 ID → 目标目录分配（多条 mdconfig 路径时由弹窗回传） */
+  mdconfig_assignments?: Record<string, string>
 }

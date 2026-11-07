@@ -1,7 +1,7 @@
 <script setup lang="ts">
 /** 单个资源类型的完整面板：搜索 + 新建 + 导入 + 列表 + 分页 + 批量栏
  *
- * 每个 ResourceType(skill/agent/config/prompt) 各渲染一个独立实例,
+ * 每个 ResourceType(skill/mdconfig/config/prompt) 各渲染一个独立实例,
  * 由 ResourcesView 用 <keep-alive> 缓存。搜索框是本组件内的本地 ref,
  * 物理隔离 —— 切换模块时各自的搜索内容原地保留,不会触发其他模块筛选。
  */
@@ -69,14 +69,14 @@ const unlinkPresets = ref<PresetLinkInfo[]>([])
 const linksDialogVisible = ref(false)
 const linksResource = ref<Resource | null>(null)
 
-// 导入相关(仅 skill / agent)
+// 导入相关(仅 skill / mdconfig)
 const importInputRef = ref<HTMLInputElement | null>(null)
 const importSkillVisible = ref(false)
 const importAgentVisible = ref(false)
 const importFiles = ref<File[]>([])
 const importRootName = ref('')
 
-const canImport = computed(() => props.type === 'skill' || props.type === 'agent')
+const canImport = computed(() => props.type === 'skill' || props.type === 'mdconfig')
 
 // 筛选分组下拉（仅「全部」下可用）
 const filterPopoverVisible = ref(false)
@@ -132,7 +132,7 @@ function handleImportFilesChange(e: Event) {
   importFiles.value = arr
   importRootName.value = first
   if (props.type === 'skill') importSkillVisible.value = true
-  else if (props.type === 'agent') importAgentVisible.value = true
+  else if (props.type === 'mdconfig') importAgentVisible.value = true
 }
 
 /** 导入成功后刷新列表 */
@@ -516,9 +516,9 @@ onActivated(() => resourceStore.fetchResources(props.type))
       @success="handleImportSuccess"
     />
 
-    <!-- SubAgent 导入对话框 -->
+    <!-- MdConfig 导入对话框 -->
     <ImportAgentDialog
-      v-if="props.type === 'agent'"
+      v-if="props.type === 'mdconfig'"
       v-model:visible="importAgentVisible"
       :files="importFiles"
       :root-dir-name="importRootName"

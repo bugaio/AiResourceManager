@@ -99,8 +99,8 @@ export function importPrivateSkill(
   })
 }
 
-/** 导入私有 agent（multipart） */
-export function importPrivateAgent(
+/** 导入私有 mdconfig（multipart） */
+export function importPrivateMdConfig(
   presetID: string,
   params: { name: string; description?: string; file: File },
 ): Promise<Resource> {
@@ -108,7 +108,7 @@ export function importPrivateAgent(
   fd.append('name', params.name)
   if (params.description) fd.append('description', params.description)
   fd.append('file', params.file)
-  return request.post(`/presets/${presetID}/import-private-agent`, fd, {
+  return request.post(`/presets/${presetID}/import-private-mdconfig`, fd, {
     headers: { 'Content-Type': 'multipart/form-data' },
   })
 }
@@ -137,13 +137,16 @@ export function getPresetGroupStatus(
 }
 
 /** 将 preset 以最新全量资源重新部署到指定路径组（补齐新增类型，如新加的 prompt）
- *  configAssignments: config 资源 ID → 目标路径（多条 config 路径时由弹窗回传，可空） */
+ *  configAssignments: config 资源 ID → 目标路径（多条 config 路径时由弹窗回传，可空）
+ *  mdconfigAssignments: mdconfig 资源 ID → 目标目录（多条 mdconfig 路径时由弹窗回传，可空） */
 export function redeployPresetGroup(
   presetID: string,
   groupID: string,
   configAssignments?: Record<string, string>,
+  mdconfigAssignments?: Record<string, string>,
 ): Promise<Deployment[]> {
   return request.post(`/presets/${presetID}/groups/${groupID}/redeploy`, {
     config_assignments: configAssignments,
+    mdconfig_assignments: mdconfigAssignments,
   })
 }
